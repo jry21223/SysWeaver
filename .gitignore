@@ -1,0 +1,25 @@
+# Rust
+/target/
+Cargo.lock
+
+# 环境变量（绝对不能提交）
+.env
+.env.local
+*.env
+
+# 运行时数据
+.agent-unix/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+*.jsonl

@@ -1,0 +1,57 @@
+[package]
+name = "agent-unix"
+version = "0.1.0"
+edition = "2021"
+authors = ["Agent Unix Team"]
+description = "A natural language OS management agent powered by AI"
+license = "MIT"
+
+[[bin]]
+name = "agent-unix"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP Client (LLM API calls)
+reqwest = { version = "0.11", features = ["json", "stream"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Utils
+uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# REPL
+rustyline = "12"
+
+# Async trait support
+async-trait = "0.1"
+
+# SSH (remote execution)
+ssh2 = { version = "0.9", optional = true }
+
+[features]
+default = []
+ssh = ["ssh2"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
