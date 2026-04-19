@@ -45,17 +45,18 @@ impl AgentLoop {
     pub async fn run(&mut self, user_input: &str, dry_run: bool) -> Result<String> {
         self.memory.push_user_text(user_input);
 
-        let system_prompt = build_system_prompt(
-            self.memory.system_context.as_ref(),
-            &self.tools,
-        );
+        let system_prompt = build_system_prompt(self.memory.system_context.as_ref(), &self.tools);
         let tool_schemas = self.tools.all_schemas();
 
         for step in 0..self.max_steps {
             let messages = self.memory.build_llm_messages();
 
             // 调用 LLM
-            let response = match self.llm.chat(&system_prompt, &messages, &tool_schemas).await {
+            let response = match self
+                .llm
+                .chat(&system_prompt, &messages, &tool_schemas)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     let err_msg = format!("LLM 调用失败: {}", e);
@@ -70,7 +71,11 @@ impl AgentLoop {
                     return Ok(text);
                 }
 
-                LlmResponse::ToolUse { mut tool_call, tool_use_id, assistant_content } => {
+                LlmResponse::ToolUse {
+                    mut tool_call,
+                    tool_use_id,
+                    assistant_content,
+                } => {
                     // 用户指定 dry_run 时全局强制
                     if dry_run {
                         tool_call.dry_run = true;
@@ -100,11 +105,16 @@ impl AgentLoop {
                         println!("\n{}", rejection);
                         self.memory.push_tool_result(&tool_use_id, &rejection, true);
                         continue;
-
                     } else if risk.level == RiskLevel::High {
                         // HIGH：需要用户确认
                         let confirmed = self.prompt_high_risk_confirmation(&tool_call, &risk)?;
-                        self.audit.log_operation(user_input, &tool_call, &risk.level, confirmed, None);
+                        self.audit.log_operation(
+                            user_input,
+                            &tool_call,
+                            &risk.level,
+                            confirmed,
+                            None,
+                        );
 
                         if !confirmed {
                             let msg = "用户取消了此操作".to_string();
@@ -114,13 +124,24 @@ impl AgentLoop {
                         }
                         // 执行
                         let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(user_input, &tool_call, &risk.level, true, Some(&result));
+                        self.audit.log_operation(
+                            user_input,
+                            &tool_call,
+                            &risk.level,
+                            true,
+                            Some(&result),
+                        );
                         result
-
                     } else if risk.level == RiskLevel::Medium && self.mode == "safe" {
                         // safe 模式下，Medium 风险也需确认
                         let confirmed = self.prompt_medium_risk_confirmation(&tool_call)?;
-                        self.audit.log_operation(user_input, &tool_call, &risk.level, confirmed, None);
+                        self.audit.log_operation(
+                            user_input,
+                            &tool_call,
+                            &risk.level,
+                            confirmed,
+                            None,
+                        );
 
                         if !confirmed {
                             let msg = "用户取消了此操作".to_string();
@@ -129,13 +150,24 @@ impl AgentLoop {
                             continue;
                         }
                         let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(user_input, &tool_call, &risk.level, true, Some(&result));
+                        self.audit.log_operation(
+                            user_input,
+                            &tool_call,
+                            &risk.level,
+                            true,
+                            Some(&result),
+                        );
                         result
-
                     } else {
                         // Safe / Low / Medium(非safe模式)：直接执行
                         let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(user_input, &tool_call, &risk.level, false, Some(&result));
+                        self.audit.log_operation(
+                            user_input,
+                            &tool_call,
+                            &risk.level,
+                            false,
+                            Some(&result),
+                        );
                         result
                     };
 
@@ -146,7 +178,11 @@ impl AgentLoop {
                     let result_content = self.format_tool_result(&tool_result);
                     self.print_tool_result_info(&tool_result);
 
-                    self.memory.push_tool_result(&tool_use_id, &result_content, !tool_result.success);
+                    self.memory.push_tool_result(
+                        &tool_use_id,
+                        &result_content,
+                        !tool_result.success,
+                    );
                 }
             }
         }
@@ -167,7 +203,10 @@ impl AgentLoop {
         println!("⚠️   高风险操作 — 需要您确认");
         println!("{}", "═".repeat(60));
         println!("工具：{}", call.tool);
-        println!("参数：{}", serde_json::to_string_pretty(&call.args).unwrap_or_default());
+        println!(
+            "参数：{}",
+            serde_json::to_string_pretty(&call.args).unwrap_or_default()
+        );
         println!("风险：{}", risk.reason);
         println!("影响：{}", risk.impact);
         if let Some(alt) = &risk.alternative {
@@ -184,7 +223,10 @@ impl AgentLoop {
 
     /// safe 模式下 Medium 风险的简化确认
     fn prompt_medium_risk_confirmation(&self, call: &ToolCall) -> Result<bool> {
-        println!("\n🟡 [safe 模式] 此操作会修改系统状态：{} {:?}", call.tool, call.args);
+        println!(
+            "\n🟡 [safe 模式] 此操作会修改系统状态：{} {:?}",
+            call.tool, call.args
+        );
         print!("确认执行？(yes/no) › ");
         io::stdout().flush()?;
 
@@ -196,7 +238,8 @@ impl AgentLoop {
     /// 打印工具调用信息
     fn print_tool_call_info(&self, step: usize, call: &ToolCall) {
         let prefix = if call.dry_run { "[DRY-RUN] " } else { "" };
-        println!("\n🔧 Step {}: {}{}({})",
+        println!(
+            "\n🔧 Step {}: {}{}({})",
             step,
             prefix,
             call.tool,
@@ -212,8 +255,11 @@ impl AgentLoop {
             let preview = result.stdout.lines().next().unwrap_or("（无输出）");
             println!("   ✅ 成功：{}", preview);
         } else {
-            println!("   ❌ 失败 (exit {})：{}", result.exit_code,
-                result.stderr.lines().next().unwrap_or(""));
+            println!(
+                "   ❌ 失败 (exit {})：{}",
+                result.exit_code,
+                result.stderr.lines().next().unwrap_or("")
+            );
         }
     }
 
@@ -226,10 +272,12 @@ impl AgentLoop {
             if result.stdout.is_empty() {
                 "操作成功（无输出）".to_string()
             } else {
-                // 限制输出长度避免消耗过多 token
+                // 限制输出长度避免消耗过多 token（按字符截断，防止 UTF-8 边界 panic）
                 let out = &result.stdout;
-                if out.len() > 4000 {
-                    format!("{}\n\n[...输出已截断，共 {} 字符]", &out[..4000], out.len())
+                let char_count = out.chars().count();
+                if char_count > 4000 {
+                    let truncated: String = out.chars().take(4000).collect();
+                    format!("{}\n\n[...输出已截断，共 {} 字符]", truncated, char_count)
                 } else {
                     out.clone()
                 }
@@ -237,8 +285,7 @@ impl AgentLoop {
         } else {
             format!(
                 "操作失败 (exit code: {})\nstderr: {}",
-                result.exit_code,
-                result.stderr
+                result.exit_code, result.stderr
             )
         }
     }

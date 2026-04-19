@@ -1,5 +1,5 @@
+use crate::types::tool::{OperationRecord, Playbook, RollbackPlan, ToolCall, ToolResult};
 use chrono::{DateTime, Utc};
-use crate::types::tool::{ToolCall, ToolResult, OperationRecord, RollbackPlan, Playbook};
 use uuid::Uuid;
 
 /// 会话记忆：保存对话历史（Claude API 格式）和操作记录
@@ -22,7 +22,7 @@ pub struct SystemContext {
     pub memory_info: String,
     pub disk_info: String,
     pub running_services: Vec<String>,
-    pub package_manager: String,  // apt | yum | dnf
+    pub package_manager: String, // apt | yum | dnf
     #[allow(dead_code)] // reserved for cache invalidation logic
     pub collected_at: DateTime<Utc>,
 }
@@ -69,9 +69,14 @@ impl Memory {
     /// 直接推入原始 Claude API 格式消息
     pub fn push_raw_message(&mut self, msg: serde_json::Value) {
         self.messages.push(msg);
-        // 超出窗口时删除最老的消息（成对删除保持 user/assistant 对齐）
+        // 超出窗口时成对删除：移除最老的 user+assistant 对，保持角色交替不破坏 tool_use 配对
         while self.messages.len() > self.max_messages {
-            self.messages.remove(0);
+            if self.messages.len() >= 2 {
+                // 删除最老的两条（通常是 user + assistant 对）
+                self.messages.drain(..2);
+            } else {
+                self.messages.remove(0);
+            }
         }
     }
 
@@ -100,14 +105,18 @@ impl Memory {
 
     /// 获取最近一次可回滚的操作
     pub fn last_undoable(&self) -> Option<&OperationRecord> {
-        self.operations.iter().rev()
+        self.operations
+            .iter()
+            .rev()
             .find(|op| op.rollback.is_some())
     }
 
     /// 将多步操作保存为 Playbook（Phase 4：Playbook 功能保留）
     #[allow(dead_code)]
     pub fn save_as_playbook(&self, name: &str, description: &str, step_count: usize) -> Playbook {
-        let steps: Vec<ToolCall> = self.operations.iter()
+        let steps: Vec<ToolCall> = self
+            .operations
+            .iter()
             .rev()
             .take(step_count)
             .rev()

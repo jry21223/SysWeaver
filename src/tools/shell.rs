@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::json;
 use std::time::Instant;
 use tokio::process::Command;
@@ -14,13 +14,17 @@ pub struct ShellTool {
 
 impl ShellTool {
     pub fn new() -> Self {
-        Self { default_timeout_secs: 30 }
+        Self {
+            default_timeout_secs: 30,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for ShellTool {
-    fn name(&self) -> &str { "shell.exec" }
+    fn name(&self) -> &str {
+        "shell.exec"
+    }
 
     fn description(&self) -> &str {
         "在服务器上执行 shell 命令。仅用于无法通过专用工具完成的操作。\
@@ -50,10 +54,13 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, dry_run: bool) -> Result<ToolResult> {
-        let command = args["command"].as_str()
+        let command = args["command"]
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("缺少 command 参数"))?;
         let working_dir = args["working_dir"].as_str().unwrap_or("/");
-        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(self.default_timeout_secs);
+        let timeout_secs = args["timeout_secs"]
+            .as_u64()
+            .unwrap_or(self.default_timeout_secs);
 
         if dry_run {
             return Ok(ToolResult::dry_run_preview(
@@ -70,7 +77,8 @@ impl Tool for ShellTool {
                 .arg(command)
                 .current_dir(working_dir)
                 .output(),
-        ).await;
+        )
+        .await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -81,11 +89,25 @@ impl Tool for ShellTool {
                 let exit_code = output.status.code().unwrap_or(-1);
 
                 if output.status.success() {
-                    Ok(ToolResult { success: true, tool: self.name().to_string(),
-                        stdout, stderr, exit_code, duration_ms, dry_run_preview: None })
+                    Ok(ToolResult {
+                        success: true,
+                        tool: self.name().to_string(),
+                        stdout,
+                        stderr,
+                        exit_code,
+                        duration_ms,
+                        dry_run_preview: None,
+                    })
                 } else {
-                    Ok(ToolResult { success: false, tool: self.name().to_string(),
-                        stdout, stderr, exit_code, duration_ms, dry_run_preview: None })
+                    Ok(ToolResult {
+                        success: false,
+                        tool: self.name().to_string(),
+                        stdout,
+                        stderr,
+                        exit_code,
+                        duration_ms,
+                        dry_run_preview: None,
+                    })
                 }
             }
             Ok(Err(e)) => Ok(ToolResult::failure(self.name(), &e.to_string(), -1)),

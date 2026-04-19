@@ -34,7 +34,8 @@ impl LocalExecutor {
                 .arg(command)
                 .current_dir(dir)
                 .output(),
-        ).await;
+        )
+        .await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 

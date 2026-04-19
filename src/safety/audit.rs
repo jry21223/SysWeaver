@@ -1,8 +1,11 @@
-use std::fs::{OpenOptions};
-use std::io::Write;
+use crate::types::{
+    risk::RiskLevel,
+    tool::{ToolCall, ToolResult},
+};
 use chrono::Utc;
 use serde_json::json;
-use crate::types::{tool::{ToolCall, ToolResult}, risk::RiskLevel};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 /// 审计日志写入（JSON Lines 格式，每行一条记录）
 pub struct AuditLogger {

@@ -14,22 +14,22 @@ pub enum TaskPlan {
         estimated_steps: Vec<String>,
     },
     /// 模糊任务，需要向用户消歧
-    Ambiguous {
-        options: Vec<DisambiguationOption>,
-    },
+    Ambiguous { options: Vec<DisambiguationOption> },
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DisambiguationOption {
-    pub label: String,        // "A", "B", "C"
-    pub description: String,  // 这个选项的自然语言说明
-    pub preview: String,      // 预计操作的摘要
+    pub label: String,       // "A", "B", "C"
+    pub description: String, // 这个选项的自然语言说明
+    pub preview: String,     // 预计操作的摘要
 }
 
 #[allow(dead_code)]
 impl Planner {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// 分析用户输入，返回任务计划
     /// 简单的关键词分析，后期可以让 LLM 来做这一步
@@ -49,7 +49,9 @@ impl Planner {
             };
         }
 
-        TaskPlan::Single { description: input.to_string() }
+        TaskPlan::Single {
+            description: input.to_string(),
+        }
     }
 
     fn is_ambiguous(&self, input: &str) -> bool {
@@ -68,7 +70,9 @@ impl Planner {
             ("停止", "修改"),
             ("检查", "修复"),
         ];
-        multi_step_patterns.iter().any(|(a, b)| input.contains(a) && input.contains(b))
+        multi_step_patterns
+            .iter()
+            .any(|(a, b)| input.contains(a) && input.contains(b))
     }
 
     fn estimate_steps(&self, input: &str) -> Vec<String> {
@@ -88,12 +92,17 @@ impl Planner {
                 "验证备份完整性".to_string(),
             ]
         } else {
-            vec!["分析任务".to_string(), "执行操作".to_string(), "验证结果".to_string()]
+            vec![
+                "分析任务".to_string(),
+                "执行操作".to_string(),
+                "验证结果".to_string(),
+            ]
         }
     }
 
     fn build_disambiguation_options(&self, input: &str) -> TaskPlan {
-        if input.contains("清理磁盘") || input.contains("清理空间") || input.contains("释放空间") {
+        if input.contains("清理磁盘") || input.contains("清理空间") || input.contains("释放空间")
+        {
             return TaskPlan::Ambiguous {
                 options: vec![
                     DisambiguationOption {
@@ -116,7 +125,9 @@ impl Planner {
         }
 
         // 默认：返回单步，让 LLM 处理
-        TaskPlan::Single { description: input.to_string() }
+        TaskPlan::Single {
+            description: input.to_string(),
+        }
     }
 }
 

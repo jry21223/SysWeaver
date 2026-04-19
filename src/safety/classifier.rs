@@ -1,6 +1,9 @@
-use regex::Regex;
-use crate::types::{risk::{RiskLevel, RiskAssessment}, tool::ToolCall};
 use super::patterns::*;
+use crate::types::{
+    risk::{RiskAssessment, RiskLevel},
+    tool::ToolCall,
+};
+use regex::Regex;
 
 pub struct RiskClassifier {
     critical: Vec<Regex>,
@@ -48,7 +51,7 @@ impl RiskClassifier {
             };
         }
 
-        if let Some(_) = self.matches_any(&self.medium, &check_target) {
+        if self.matches_any(&self.medium, &check_target).is_some() {
             return RiskAssessment {
                 level: RiskLevel::Medium,
                 reason: "此操作会修改系统状态".to_string(),
@@ -78,7 +81,7 @@ impl RiskClassifier {
         format!("{} {}", call.tool, args_str)
     }
 
-    fn matches_any<'a>(&self, patterns: &'a [Regex], target: &str) -> Option<String> {
+    fn matches_any(&self, patterns: &[Regex], target: &str) -> Option<String> {
         for regex in patterns {
             if regex.is_match(target) {
                 return Some(regex.as_str().to_string());
@@ -89,7 +92,9 @@ impl RiskClassifier {
 
     fn describe_high_risk_impact(&self, call: &ToolCall, pattern: &str) -> String {
         if pattern.contains("userdel") {
-            let username = call.args.get("username")
+            let username = call
+                .args
+                .get("username")
                 .and_then(|v| v.as_str())
                 .unwrap_or("该用户");
             return format!(

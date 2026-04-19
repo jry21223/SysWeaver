@@ -1,10 +1,10 @@
-pub mod shell;
 pub mod file;
+pub mod shell;
 pub mod system;
 
-use async_trait::async_trait;
-use anyhow::Result;
 use crate::types::tool::{ToolCall, ToolResult};
+use anyhow::Result;
+use async_trait::async_trait;
 
 /// 所有工具必须实现的统一接口
 #[async_trait]
@@ -39,7 +39,8 @@ impl ToolManager {
 
     /// 根据 ToolCall 分发到对应工具执行
     pub async fn dispatch(&self, call: &ToolCall) -> Result<ToolResult> {
-        let tool = self.tools
+        let tool = self
+            .tools
             .iter()
             .find(|t| t.name() == call.tool)
             .ok_or_else(|| anyhow::anyhow!("未知工具: {}", call.tool))?;
@@ -49,13 +50,16 @@ impl ToolManager {
 
     /// 生成所有工具的 Schema 列表（用于 LLM tool_use）
     pub fn all_schemas(&self) -> Vec<serde_json::Value> {
-        self.tools.iter().map(|t| {
-            serde_json::json!({
-                "name": t.name(),
-                "description": t.description(),
-                "input_schema": t.schema(),
+        self.tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name(),
+                    "description": t.description(),
+                    "input_schema": t.schema(),
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 

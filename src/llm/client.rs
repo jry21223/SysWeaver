@@ -1,7 +1,7 @@
+use crate::types::tool::ToolCall;
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::json;
-use crate::types::tool::ToolCall;
 
 pub struct LlmClient {
     client: Client,
@@ -47,7 +47,8 @@ impl LlmClient {
             "messages": messages,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -71,15 +72,16 @@ impl LlmClient {
 
     fn parse_response(&self, resp: serde_json::Value) -> Result<LlmResponse> {
         let stop_reason = resp["stop_reason"].as_str().unwrap_or("");
-        let content = resp["content"].as_array()
-            .cloned()
-            .unwrap_or_default();
+        let content = resp["content"].as_array().cloned().unwrap_or_default();
 
         if stop_reason == "tool_use" {
             // 找到第一个 tool_use 块
             if let Some(tool_block) = content.iter().find(|b| b["type"] == "tool_use") {
-                let tool_use_id = tool_block["id"].as_str()
-                    .unwrap_or("unknown_id")
+                let tool_use_id = tool_block["id"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("tool_use block 缺少 'id' 字段，API 版本可能不兼容")
+                    })?
                     .to_string();
                 let tool_name = tool_block["name"].as_str().unwrap_or("").to_string();
                 let tool_input = tool_block["input"].clone();
@@ -100,7 +102,8 @@ impl LlmClient {
         }
 
         // LLM 直接回复文本
-        let text = content.iter()
+        let text = content
+            .iter()
             .find(|b| b["type"] == "text")
             .and_then(|b| b["text"].as_str())
             .unwrap_or("操作完成")

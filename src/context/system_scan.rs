@@ -1,6 +1,6 @@
-use tokio::process::Command;
 use crate::agent::memory::SystemContext;
 use chrono::Utc;
+use tokio::process::Command;
 
 /// 启动时扫描系统环境，构建 SystemContext
 pub async fn scan() -> SystemContext {
@@ -12,9 +12,13 @@ pub async fn scan() -> SystemContext {
         }
     };
 
-    let os_info = run("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -s").await;
+    let os_info = run(
+        "cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -s",
+    )
+    .await;
     let hostname = run("hostname").await;
-    let cpu_info = run("nproc && cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | xargs").await;
+    let cpu_info =
+        run("nproc && cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | xargs").await;
     let memory_info = run("free -h | grep Mem | awk '{print $2\" total, \"$3\" used\"}'").await;
     let disk_info = run("df -h / | tail -1 | awk '{print $1\" \"$2\", \"$5\" used\"}'").await;
 

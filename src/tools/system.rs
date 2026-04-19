@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
 
@@ -10,7 +10,9 @@ use crate::types::tool::ToolResult;
 pub struct SystemTool;
 
 impl SystemTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     async fn run(&self, cmd: &str) -> String {
         let out = Command::new("sh").arg("-c").arg(cmd).output().await;
@@ -19,11 +21,27 @@ impl SystemTool {
             Err(e) => format!("ERROR: {}", e),
         }
     }
+
+    /// 验证 filter 参数只包含安全字符（防止 shell 注入）
+    fn validate_filter(filter: &str) -> Result<()> {
+        if filter
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_.@:".contains(c))
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "filter 参数包含非法字符，只允许字母、数字和 -_.@:"
+            ))
+        }
+    }
 }
 
 #[async_trait]
 impl Tool for SystemTool {
-    fn name(&self) -> &str { "system.info" }
+    fn name(&self) -> &str {
+        "system.info"
+    }
 
     fn description(&self) -> &str {
         "查询系统信息：磁盘/内存/CPU/进程/用户/网络/服务状态。\
@@ -41,7 +59,7 @@ impl Tool for SystemTool {
                 },
                 "filter": {
                     "type": "string",
-                    "description": "可选过滤关键词，例如进程名、用户名、服务名"
+                    "description": "可选过滤关键词，例如进程名、用户名、服务名（仅字母数字和 -_.@:）"
                 }
             },
             "required": ["query"]
@@ -49,9 +67,16 @@ impl Tool for SystemTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, dry_run: bool) -> Result<ToolResult> {
-        let query = args["query"].as_str()
+        let query = args["query"]
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("缺少 query 参数"))?;
         let filter = args["filter"].as_str().unwrap_or("");
+
+        // 验证 filter 防止 shell 注入（仅在 filter 非空时）
+        if !filter.is_empty() {
+            Self::validate_filter(filter)
+                .map_err(|e| anyhow::anyhow!("filter 参数校验失败: {}", e))?;
+        }
 
         if dry_run {
             return Ok(ToolResult::dry_run_preview(
@@ -60,33 +85,95 @@ impl Tool for SystemTool {
             ));
         }
 
+        // 对 filter 涉及的命令，使用 Command::new 直接传参避免注入
         let output = match query {
             "disk" => self.run("df -h").await,
-            "memory" => self.run("free -h && echo '---' && cat /proc/meminfo | grep -E 'MemTotal|MemFree|MemAvailable|Cached'").await,
-            "cpu" => self.run("uptime && echo '---' && nproc && cat /proc/cpuinfo | grep 'model name' | head -1").await,
+            "memory" => {
+                self.run(
+                    "free -h && echo '---' && cat /proc/meminfo \
+                     | grep -E 'MemTotal|MemFree|MemAvailable|Cached'",
+                )
+                .await
+            }
+            "cpu" => {
+                self.run(
+                    "uptime && echo '---' && nproc \
+                     && cat /proc/cpuinfo | grep 'model name' | head -1",
+                )
+                .await
+            }
             "process" => {
                 if filter.is_empty() {
                     self.run("ps aux --sort=-%mem | head -20").await
                 } else {
-                    self.run(&format!("ps aux | grep -v grep | grep '{}'", filter)).await
+                    // 使用 Command::new + 独立参数，不经 shell 插值
+                    let out = Command::new("ps")
+                        .arg("aux")
+                        .output()
+                        .await
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .unwrap_or_default();
+                    out.lines()
+                        .filter(|l| l.contains(filter))
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 }
             }
             "user" => {
                 if filter.is_empty() {
-                    self.run("cut -d: -f1,3,7 /etc/passwd | grep -v nologin | grep -v false").await
+                    self.run("cut -d: -f1,3,7 /etc/passwd | grep -v nologin | grep -v false")
+                        .await
                 } else {
-                    self.run(&format!("id {} 2>&1 && last {} | head -5", filter, filter)).await
+                    // id 和 last 命令直接传参
+                    let id_out = Command::new("id")
+                        .arg(filter)
+                        .output()
+                        .await
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_else(|e| format!("ERROR: {}", e));
+                    let last_out = Command::new("last")
+                        .arg(filter)
+                        .output()
+                        .await
+                        .map(|o| {
+                            String::from_utf8_lossy(&o.stdout)
+                                .lines()
+                                .take(5)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    format!("{}\n---\n{}", id_out, last_out)
                 }
             }
             "network" => self.run("ss -tlnp && echo '---' && ip -br addr").await,
             "service" => {
                 if filter.is_empty() {
-                    self.run("systemctl list-units --type=service --state=running --no-pager | head -20").await
+                    self.run(
+                        "systemctl list-units --type=service \
+                         --state=running --no-pager | head -20",
+                    )
+                    .await
                 } else {
-                    self.run(&format!("systemctl status {} --no-pager", filter)).await
+                    // systemctl status 直接传参
+                    Command::new("systemctl")
+                        .arg("status")
+                        .arg(filter)
+                        .arg("--no-pager")
+                        .output()
+                        .await
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .unwrap_or_else(|e| format!("ERROR: {}", e))
                 }
             }
-            "os" => self.run("uname -a && echo '---' && cat /etc/os-release 2>/dev/null || cat /etc/redhat-release 2>/dev/null").await,
+            "os" => {
+                self.run(
+                    "uname -a && echo '---' \
+                     && cat /etc/os-release 2>/dev/null \
+                     || cat /etc/redhat-release 2>/dev/null",
+                )
+                .await
+            }
             _ => return Err(anyhow::anyhow!("不支持的查询类型: {}", query)),
         };
 

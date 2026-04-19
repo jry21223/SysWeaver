@@ -1,13 +1,13 @@
 mod agent;
-mod llm;
-mod tools;
-mod safety;
-mod executor;
 mod context;
+mod executor;
+mod llm;
+mod safety;
+mod tools;
 mod types;
 
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use tracing::info;
 
 use agent::r#loop::AgentLoop;
@@ -83,7 +83,10 @@ async fn main() -> Result<()> {
 
             run_chat_loop(&api_key, &cli.mode, ctx).await?;
         }
-        Commands::Run { instruction, dry_run } => {
+        Commands::Run {
+            instruction,
+            dry_run,
+        } => {
             let ctx = context::system_scan::scan().await;
             run_single(&api_key, &cli.mode, ctx, &instruction, dry_run).await?;
         }
@@ -106,8 +109,8 @@ async fn run_chat_loop(
     mode: &str,
     ctx: crate::agent::memory::SystemContext,
 ) -> Result<()> {
-    use rustyline::DefaultEditor;
     use rustyline::error::ReadlineError;
+    use rustyline::DefaultEditor;
 
     let mut rl = DefaultEditor::new()?;
     let history_path = format!(
@@ -122,7 +125,9 @@ async fn run_chat_loop(
         match rl.readline("你 › ") {
             Ok(line) => {
                 let input = line.trim().to_string();
-                if input.is_empty() { continue; }
+                if input.is_empty() {
+                    continue;
+                }
                 let _ = rl.add_history_entry(&input);
 
                 match input.as_str() {
@@ -213,8 +218,18 @@ async fn show_history() {
                         None => "⏭️ 取消",
                     }
                 };
-                println!("  {} {} [{}] {} {}", status, &ts[..16], risk, tool,
-                    entry["args"].to_string().chars().take(60).collect::<String>());
+                println!(
+                    "  {} {} [{}] {} {}",
+                    status,
+                    &ts[..16],
+                    risk,
+                    tool,
+                    entry["args"]
+                        .to_string()
+                        .chars()
+                        .take(60)
+                        .collect::<String>()
+                );
             }
         }
         _ => println!("暂无操作历史记录。"),
@@ -222,8 +237,8 @@ async fn show_history() {
 }
 
 async fn glob_audit_files(pattern: &str) -> Option<Vec<serde_json::Value>> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::fs::File;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
     // 简单获取当日日志文件
     let log_path = pattern.replace("*", &chrono::Local::now().format("%Y%m%d").to_string());
@@ -251,7 +266,8 @@ fn show_agent_history(agent: &AgentLoop) {
     for (i, op) in ops.iter().enumerate() {
         let success = op.result.as_ref().map(|r| r.success).unwrap_or(false);
         let can_undo = op.rollback.is_some();
-        println!("  {}. {} {} {}",
+        println!(
+            "  {}. {} {} {}",
             i + 1,
             if success { "✅" } else { "❌" },
             op.tool_call.tool,
