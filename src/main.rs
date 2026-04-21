@@ -1,4 +1,5 @@
 mod agent;
+mod config;
 mod context;
 mod executor;
 mod llm;
@@ -11,6 +12,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use agent::r#loop::AgentLoop;
+use config::LlmConfig;
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +32,18 @@ struct Cli {
     /// 运行模式：safe（所有写操作需确认）| normal（默认）| auto（仅 CRITICAL 需确认）
     #[arg(long, global = true, default_value = "normal")]
     mode: String,
+
+    /// LLM Provider: anthropic | openai-compatible
+    #[arg(long, global = true)]
+    provider: Option<String>,
+
+    /// LLM 模型 ID（如 claude-sonnet-4-5, gpt-4o）
+    #[arg(long, global = true)]
+    model: Option<String>,
+
+    /// LLM API Base URL（自定义端点）
+    #[arg(long, global = true)]
+    base_url: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -64,13 +78,21 @@ async fn main() -> Result<()> {
 
     info!("Agent Unix 启动，模式: {}", cli.mode);
 
-    // 读取 API Key
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .unwrap_or_else(|_| {
-            eprintln!("⚠️  未设置 ANTHROPIC_API_KEY 环境变量");
-            std::process::exit(1);
-        });
+    // 加载 LLM 配置（CLI > ENV > 默认）
+    let llm_config = LlmConfig::load(
+        cli.provider.as_deref(),
+        cli.model.as_deref(),
+        cli.base_url.as_deref(),
+    ).unwrap_or_else(|e| {
+        eprintln!("⚠️  配置加载失败: {}", e);
+        std::process::exit(1);
+    });
+
+    info!("LLM Provider: {} @ {} (model: {})",
+        llm_config.provider_kind,
+        llm_config.base_url,
+        llm_config.model
+    );
 
     match cli.command {
         Commands::Chat => {
@@ -81,14 +103,14 @@ async fn main() -> Result<()> {
             println!("   ✅ 系统：{} @ {}", ctx.os_info, ctx.hostname);
             println!("   输入 'exit' 退出，'undo' 撤销上一步操作\n");
 
-            run_chat_loop(&api_key, &cli.mode, ctx).await?;
+            run_chat_loop(&llm_config, &cli.mode, ctx).await?;
         }
         Commands::Run {
             instruction,
             dry_run,
         } => {
             let ctx = context::system_scan::scan().await;
-            run_single(&api_key, &cli.mode, ctx, &instruction, dry_run).await?;
+            run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
         }
         Commands::History => {
             show_history().await;
@@ -105,7 +127,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_chat_loop(
-    api_key: &str,
+    llm_config: &LlmConfig,
     mode: &str,
     ctx: crate::agent::memory::SystemContext,
 ) -> Result<()> {
@@ -119,7 +141,7 @@ async fn run_chat_loop(
     );
     let _ = rl.load_history(&history_path);
 
-    let mut agent = AgentLoop::new(api_key, mode, ctx);
+    let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
 
     loop {
         match rl.readline("你 › ") {
@@ -168,13 +190,13 @@ async fn run_chat_loop(
 }
 
 async fn run_single(
-    api_key: &str,
+    llm_config: &LlmConfig,
     mode: &str,
     ctx: crate::agent::memory::SystemContext,
     instruction: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let mut agent = AgentLoop::new(api_key, mode, ctx);
+    let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
 
     if dry_run {
         println!("🔍 DRY-RUN 模式：仅预览，不实际执行\n");

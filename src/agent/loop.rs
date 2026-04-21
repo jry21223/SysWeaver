@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use uuid::Uuid;
 
 use crate::agent::memory::{Memory, SystemContext};
+use crate::config::LlmConfig;
 use crate::llm::client::{LlmClient, LlmResponse};
 use crate::llm::prompt::build_system_prompt;
 use crate::safety::audit::AuditLogger;
@@ -25,13 +26,13 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    pub fn new(api_key: &str, mode: &str, ctx: SystemContext) -> Self {
+    pub fn new(llm_config: LlmConfig, mode: &str, ctx: SystemContext) -> Self {
         let session_id = Uuid::new_v4().to_string();
         let mut memory = Memory::new();
         memory.system_context = Some(ctx);
 
         Self {
-            llm: LlmClient::new(api_key.to_string()),
+            llm: LlmClient::new(llm_config),
             tools: ToolManager::new(),
             classifier: RiskClassifier::new(),
             audit: AuditLogger::new(&session_id),
