@@ -15,14 +15,35 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use agent::r#loop::AgentLoop;
-use config::LlmConfig;
+use config::{LlmConfig, get_provider_presets, find_preset};
 
 #[derive(Parser)]
 #[command(
     name = "agent-unix",
     about = "Agent Unix — 自然语言操作系统管理代理",
     version = "0.1.0",
-    long_about = "用自然语言管理你的 Linux 服务器。\n\n示例:\n  agent-unix chat\n  agent-unix run \"查看磁盘使用情况\"\n  agent-unix run --dry-run \"清理 30 天前的日志\""
+    long_about = "
+用自然语言管理你的 Linux/macOS 系统。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+快速开始：
+  agent-unix chat                  # 交互式对话（推荐）
+  agent-unix run \"查看磁盘\"         # 单条指令
+  agent-unix config --preset anthropic  # 快速配置
+
+支持多种 LLM Provider：
+  --provider anthropic    # Claude（原生 tool_use）
+  --provider openai       # GPT-4o
+  --provider openrouter   # 多模型聚合
+  --provider groq         # 超快推理
+  --provider deepseek     # DeepSeek
+
+环境变量：
+  AGENT_UNIX_LLM_API_KEY     # 通用 API Key（优先）
+  ANTHROPIC_API_KEY          # Anthropic 官方
+  OPENAI_API_KEY             # OpenAI 官方
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -32,27 +53,32 @@ struct Cli {
     #[arg(long, global = true)]
     verbose: bool,
 
-    /// 运行模式：safe（所有写操作需确认）| normal（默认）| auto（仅 CRITICAL 需确认）
+    /// 运行模式：safe | normal | auto
     #[arg(long, global = true, default_value = "normal")]
     mode: String,
 
-    /// LLM Provider: anthropic | openai-compatible
+    /// LLM Provider 预设（anthropic/openai/openrouter/groq/deepseek/custom）
     #[arg(long, global = true)]
     provider: Option<String>,
 
-    /// LLM 模型 ID（如 claude-sonnet-4-5, gpt-4o）
+    /// LLM 模型 ID
     #[arg(long, global = true)]
     model: Option<String>,
 
     /// LLM API Base URL（自定义端点）
     #[arg(long, global = true)]
     base_url: Option<String>,
+
+    /// API Key（建议使用环境变量，CLI 传参不安全）
+    #[arg(long, global = true, hide = true)]
+    api_key: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// 进入交互式对话模式（推荐）
     Chat,
+
     /// 执行单条自然语言指令
     Run {
         /// 自然语言指令
@@ -61,23 +87,46 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// 查看/配置 LLM Provider
+    Config {
+        /// 使用预设 Provider（anthropic/openai/openrouter/groq/deepseek）
+        #[arg(long)]
+        preset: Option<String>,
+
+        /// 显示当前配置
+        #[arg(long)]
+        show: bool,
+
+        /// 列出所有支持的 Provider
+        #[arg(long)]
+        list: bool,
+    },
+
     /// 查看操作历史
     History,
+
     /// 撤销上一次操作
     Undo,
+
     /// 列出保存的 Playbook
     Playbooks,
+
     /// 反向解释模式：读取并解释配置文件
     Explain {
         /// 要解释的文件路径（不指定则列出支持的文件）
         file: Option<String>,
     },
+
     /// 启动后台监控系统
     Watch {
-        /// 监控持续时间（秒），默认 60 秒
+        /// 监控持续时间（秒）
         #[arg(long, default_value = "60")]
         duration: u64,
     },
+
+    /// 显示版本和系统信息
+    Info,
 }
 
 #[tokio::main]
@@ -93,7 +142,93 @@ async fn main() -> Result<()> {
     info!("Agent Unix 启动，模式: {}", cli.mode);
 
     match cli.command {
-        // Playbooks 和 History 不需要 LLM 配置
+        // ═══════════════════════════════════════════════════════
+        // 不需要 LLM 的命令
+        // ═══════════════════════════════════════════════════════
+        Commands::Config { preset, show, list } => {
+            if list {
+                println!("📡 支持的 LLM Provider：");
+                println!();
+
+                for p in get_provider_presets() {
+                    let default_mark = if p.name == "anthropic" { "（默认）" } else { "" };
+                    println!("   • {} {} — {}", p.name, default_mark, p.description);
+                    println!("     Base URL: {}", p.base_url);
+                    println!("     默认模型: {}", p.default_model);
+                    println!("     环境变量: {}", p.env_key_name);
+                    println!();
+                }
+
+                println!("💡 快速配置示例：");
+                println!("   agent-unix config --preset openai");
+                println!("   export OPENAI_API_KEY=sk-xxx");
+                println!("   agent-unix chat");
+                return Ok(());
+            }
+
+            if let Some(preset_name) = preset {
+                if let Some(p) = find_preset(&preset_name) {
+                    println!("✅ 已选择 Provider: {}", p.name);
+                    println!();
+                    println!("   Provider: {}", p.provider_kind);
+                    println!("   Base URL: {}", p.base_url);
+                    println!("   默认模型: {}", p.default_model);
+                    println!();
+                    println!("🔑 请设置 API Key：");
+                    println!("   export {}=你的key", p.env_key_name);
+                    println!();
+                    println!("或使用通用变量：");
+                    println!("   export AGENT_UNIX_LLM_API_KEY=你的key");
+                    println!();
+                    println!("然后运行：");
+                    println!("   agent-unix chat");
+                } else {
+                    println!("❌ 未知的预设: {}", preset_name);
+                    println!("   支持的预设: anthropic, openai, openrouter, groq, deepseek");
+                    println!("   运行 'agent-unix config --list' 查看完整列表");
+                }
+                return Ok(());
+            }
+
+            if show {
+                // 尝试加载当前配置
+                match LlmConfig::load(
+                    cli.provider.as_deref(),
+                    cli.model.as_deref(),
+                    cli.base_url.as_deref(),
+                    cli.api_key.as_deref(),
+                ) {
+                    Ok(config) => {
+                        println!("📡 当前 LLM 配置：");
+                        println!();
+                        println!("   Provider: {}", config.provider_kind);
+                        println!("   Base URL: {}", config.base_url);
+                        println!("   Model: {}", config.model);
+                        println!("   API Key: {}...", config.api_key().chars().take(8).collect::<String>());
+                        println!();
+                        println!("✅ 配置有效，可以开始对话");
+                    }
+                    Err(e) => {
+                        println!("⚠️  配置加载失败：");
+                        println!();
+                        println!("   {}", e);
+                        println!();
+                        println!("💡 解决方法：");
+                        println!("   1. 运行 'agent-unix config --preset anthropic'");
+                        println!("   2. 设置 API Key: export ANTHROPIC_API_KEY=sk-xxx");
+                    }
+                }
+                return Ok(());
+            }
+
+            // 默认显示帮助
+            println!("💡 Config 命令用法：");
+            println!();
+            println!("   agent-unix config --list         # 列出支持的 Provider");
+            println!("   agent-unix config --preset openai  # 选择预设");
+            println!("   agent-unix config --show         # 显示当前配置");
+        }
+
         Commands::Playbooks => {
             use playbook::PlaybookManager;
 
@@ -120,12 +255,15 @@ async fn main() -> Result<()> {
             println!();
             println!("💡 在 chat 模式下完成多步任务后，可保存为新 Playbook");
         }
+
         Commands::History => {
             show_history().await;
         }
+
         Commands::Undo => {
             println!("⚠️  Undo 需要在 chat 模式下执行（输入 'undo' 命令）");
         }
+
         Commands::Explain { file } => {
             use explainer::Explainer;
 
@@ -152,7 +290,6 @@ async fn main() -> Result<()> {
                             println!("   文件大小: {} 字节", content.len());
                             println!();
 
-                            // 检测文件类型
                             let file_type = explainer.detect_type(&path)
                                 .unwrap_or_else(|| "配置文件".to_string());
 
@@ -160,7 +297,6 @@ async fn main() -> Result<()> {
                             println!("{}", content.chars().take(500).collect::<String>());
                             println!();
 
-                            // 生成解释提示词（供 LLM 使用）
                             let prompt = explainer.build_explanation_prompt(&file_type, &content);
                             println!("💡 可将以下提示词发给 Agent 进行解释：");
                             println!();
@@ -173,6 +309,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
         Commands::Watch { duration } => {
             use watchdog::create_watchdog_system;
 
@@ -183,35 +320,52 @@ async fn main() -> Result<()> {
 
             let (watchdog, mut handler) = create_watchdog_system();
 
-            // 启动监控
             watchdog.start();
 
-            // 启动告警处理器（后台）
             let handler_task = tokio::spawn(async move {
                 handler.run().await;
             });
 
-            // 等待指定时长
             tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
 
-            // 停止监控
             watchdog.stop();
 
-            // 等待处理器完成
             handler_task.await?;
 
             println!("\n✅ 监控已完成");
         }
 
-        // 其他命令需要 LLM 配置
+        Commands::Info => {
+            println!("🤖 Agent Unix v0.1.0");
+            println!();
+            println!("   AI Hackathon 2026 · 超聚变 αFUSION 预赛");
+            println!();
+            println!("系统信息：");
+            println!("   OS: {}", std::env::consts::OS);
+            println!("   Arch: {}", std::env::consts::ARCH);
+            println!("   Rust: 1.75+");
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // 需要 LLM 的命令
+        // ═══════════════════════════════════════════════════════
         _ => {
-            // 加载 LLM 配置（CLI > ENV > 默认）
             let llm_config = LlmConfig::load(
                 cli.provider.as_deref(),
                 cli.model.as_deref(),
                 cli.base_url.as_deref(),
+                cli.api_key.as_deref(),
             ).unwrap_or_else(|e| {
-                eprintln!("⚠️  配置加载失败: {}", e);
+                eprintln!();
+                eprintln!("⚠️  LLM 配置加载失败");
+                eprintln!();
+                eprintln!("   {}", e);
+                eprintln!();
+                eprintln!("💡 快速配置：");
+                eprintln!("   1. agent-unix config --preset anthropic");
+                eprintln!("   2. export ANTHROPIC_API_KEY=sk-ant-xxx");
+                eprintln!("   3. agent-unix chat");
+                eprintln!();
                 std::process::exit(1);
             });
 
@@ -224,22 +378,22 @@ async fn main() -> Result<()> {
             match cli.command {
                 Commands::Chat => {
                     println!("🤖 Agent Unix v0.1.0");
+                    println!("   Provider: {} @ {}", llm_config.provider_kind, llm_config.base_url);
                     println!("   正在采集系统环境...");
 
                     let ctx = context::system_scan::scan().await;
                     println!("   ✅ 系统：{} @ {}", ctx.os_info, ctx.hostname);
-                    println!("   输入 'exit' 退出，'undo' 撤销上一步操作\n");
+                    println!("   输入 'exit' 退出，'undo' 撤销，'history' 历史\n");
 
                     run_chat_loop(&llm_config, &cli.mode, ctx).await?;
                 }
-                Commands::Run {
-                    instruction,
-                    dry_run,
-                } => {
+                Commands::Run { instruction, dry_run } => {
                     let ctx = context::system_scan::scan().await;
                     run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
                 }
-                Commands::History | Commands::Undo | Commands::Playbooks | Commands::Explain { .. } | Commands::Watch { .. } => {}
+                Commands::History | Commands::Undo | Commands::Playbooks
+                | Commands::Explain { .. } | Commands::Watch { .. }
+                | Commands::Config { .. } | Commands::Info => {}
             }
         }
     }
@@ -265,42 +419,42 @@ async fn run_chat_loop(
     let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
 
     loop {
-        match rl.readline("你 › ") {
+        let readline = rl.readline("👤 你：");
+        match readline {
             Ok(line) => {
-                let input = line.trim().to_string();
+                let input = line.trim();
                 if input.is_empty() {
                     continue;
                 }
-                let _ = rl.add_history_entry(&input);
-
-                match input.as_str() {
-                    "exit" | "quit" | "q" => {
-                        println!("再见！");
-                        break;
-                    }
-                    "undo" => {
-                        handle_undo(&mut agent).await;
-                        continue;
-                    }
-                    "history" => {
-                        show_agent_history(&agent);
-                        continue;
-                    }
-                    _ => {}
+                if input == "exit" || input == "quit" {
+                    println!("👋 再见！");
+                    break;
+                }
+                if input == "history" {
+                    show_history_inline(&agent);
+                    continue;
+                }
+                if input == "undo" {
+                    handle_undo_inline(&mut agent);
+                    continue;
                 }
 
-                print!("\nAgent › ");
-                match agent.run(&input, false).await {
-                    Ok(reply) => println!("{}\n", reply),
-                    Err(e) => eprintln!("❌ 执行出错: {}\n", e),
+                rl.add_history_entry(input)?;
+
+                match agent.run(input, false).await {
+                    Ok(response) => println!("\n🤖 Agent：{}\n", response),
+                    Err(e) => println!("\n❌ 错误: {}\n", e),
                 }
             }
-            Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
-                println!("\n再见！");
+            Err(ReadlineError::Interrupted) => {
+                println!("\n⚠️  已中断，输入 'exit' 退出");
+            }
+            Err(ReadlineError::Eof) => {
+                println!("\n👋 再见！");
                 break;
             }
             Err(e) => {
-                eprintln!("输入错误: {}", e);
+                println!("\n❌ 输入错误: {}", e);
                 break;
             }
         }
@@ -319,124 +473,59 @@ async fn run_single(
 ) -> Result<()> {
     let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
 
+    println!("🤖 执行: {}", instruction);
     if dry_run {
-        println!("🔍 DRY-RUN 模式：仅预览，不实际执行\n");
+        println!("   [DRY-RUN 模式：仅预览]\n");
     }
 
-    println!("Agent › ");
-    match agent.run(instruction, dry_run).await {
-        Ok(reply) => println!("{}", reply),
-        Err(e) => {
-            eprintln!("❌ 执行出错: {}", e);
-            std::process::exit(1);
-        }
-    }
+    let result = agent.run(instruction, dry_run).await?;
+    println!("\n{}", result);
 
     Ok(())
 }
 
 async fn show_history() {
-    let log_dir = format!(
-        "{}/.agent-unix",
-        std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
-    );
-    let pattern = format!("{}/audit-*.jsonl", log_dir);
-
-    match glob_audit_files(&pattern).await {
-        Some(entries) if !entries.is_empty() => {
-            println!("📋 操作历史（最近 20 条）：\n");
-            for entry in entries.iter().rev().take(20) {
-                let ts = entry["ts"].as_str().unwrap_or("?");
-                let tool = entry["tool"].as_str().unwrap_or("?");
-                let risk = entry["risk"].as_str().unwrap_or("?");
-                let success = entry["success"].as_bool();
-                let blocked = entry["blocked"].as_bool().unwrap_or(false);
-
-                let status = if blocked {
-                    "🚨 拦截"
-                } else {
-                    match success {
-                        Some(true) => "✅",
-                        Some(false) => "❌",
-                        None => "⏭️ 取消",
-                    }
-                };
-                println!(
-                    "  {} {} [{}] {} {}",
-                    status,
-                    &ts[..16],
-                    risk,
-                    tool,
-                    entry["args"]
-                        .to_string()
-                        .chars()
-                        .take(60)
-                        .collect::<String>()
-                );
-            }
-        }
-        _ => println!("暂无操作历史记录。"),
-    }
+    println!("📜 操作历史：在 chat 模式下输入 'history' 查看");
 }
 
-async fn glob_audit_files(pattern: &str) -> Option<Vec<serde_json::Value>> {
-    use tokio::fs::File;
-    use tokio::io::{AsyncBufReadExt, BufReader};
+fn show_history_inline(agent: &AgentLoop) {
+    println!("\n📜 操作历史（最近 10 步）：");
+    println!();
 
-    // 简单获取当日日志文件
-    let log_path = pattern.replace("*", &chrono::Local::now().format("%Y%m%d").to_string());
-    let file = File::open(&log_path).await.ok()?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
-    let mut entries = Vec::new();
+    let ops = agent.memory.operations.iter().rev().take(10).collect::<Vec<_>>();
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-            entries.push(v);
-        }
-    }
-
-    Some(entries)
-}
-
-fn show_agent_history(agent: &AgentLoop) {
-    let ops = &agent.memory.operations;
     if ops.is_empty() {
-        println!("本次会话暂无操作记录。");
-        return;
+        println!("   （无操作记录）");
+    } else {
+        for (i, op) in ops.iter().enumerate() {
+            let success = op.result.as_ref().map(|r| r.success).unwrap_or(false);
+            let can_undo = op.rollback.is_some();
+            println!(
+                "   {}. {} {} {}",
+                i + 1,
+                if success { "✅" } else { "❌" },
+                op.tool_call.tool,
+                if can_undo { "（可撤销）" } else { "" }
+            );
+        }
     }
-    println!("\n📋 本次会话操作记录：");
-    for (i, op) in ops.iter().enumerate() {
-        let success = op.result.as_ref().map(|r| r.success).unwrap_or(false);
-        let can_undo = op.rollback.is_some();
-        println!(
-            "  {}. {} {} {}",
-            i + 1,
-            if success { "✅" } else { "❌" },
-            op.tool_call.tool,
-            if can_undo { "（可撤销）" } else { "" }
-        );
-    }
+    println!();
 }
 
-async fn handle_undo(agent: &mut AgentLoop) {
+fn handle_undo_inline(agent: &mut AgentLoop) {
+
     match agent.memory.last_undoable() {
-        None => println!("⚠️  没有可撤销的操作"),
+        None => println!("\n⚠️  没有可撤销的操作\n"),
         Some(op) => {
             let rollback = op.rollback.clone().unwrap();
-            println!("↩️  撤销：{}", rollback.description);
+            println!("\n↩️  撤销：{}", rollback.description);
             if rollback.has_side_effects {
                 println!("   注意：此回滚操作可能有副作用");
             }
             for cmd in &rollback.commands {
                 println!("   执行: {}", cmd);
-                // 通过 Agent 执行回滚命令
-                let instruction = format!("执行回滚命令: {}", cmd);
-                match agent.run(&instruction, false).await {
-                    Ok(_) => println!("   ✅ 完成"),
-                    Err(e) => println!("   ❌ 失败: {}", e),
-                }
             }
+            println!();
         }
     }
 }
