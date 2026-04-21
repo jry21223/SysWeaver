@@ -3,6 +3,7 @@ mod config;
 mod context;
 mod executor;
 mod llm;
+mod playbook;
 mod safety;
 mod tools;
 mod types;
@@ -78,39 +79,33 @@ async fn main() -> Result<()> {
 
     info!("Agent Unix 启动，模式: {}", cli.mode);
 
-    // 加载 LLM 配置（CLI > ENV > 默认）
-    let llm_config = LlmConfig::load(
-        cli.provider.as_deref(),
-        cli.model.as_deref(),
-        cli.base_url.as_deref(),
-    ).unwrap_or_else(|e| {
-        eprintln!("⚠️  配置加载失败: {}", e);
-        std::process::exit(1);
-    });
-
-    info!("LLM Provider: {} @ {} (model: {})",
-        llm_config.provider_kind,
-        llm_config.base_url,
-        llm_config.model
-    );
-
     match cli.command {
-        Commands::Chat => {
-            println!("🤖 Agent Unix v0.1.0");
-            println!("   正在采集系统环境...");
+        // Playbooks 和 History 不需要 LLM 配置
+        Commands::Playbooks => {
+            use playbook::PlaybookManager;
 
-            let ctx = context::system_scan::scan().await;
-            println!("   ✅ 系统：{} @ {}", ctx.os_info, ctx.hostname);
-            println!("   输入 'exit' 退出，'undo' 撤销上一步操作\n");
+            let mut manager = PlaybookManager::new();
+            manager.initialize(None)?;
 
-            run_chat_loop(&llm_config, &cli.mode, ctx).await?;
-        }
-        Commands::Run {
-            instruction,
-            dry_run,
-        } => {
-            let ctx = context::system_scan::scan().await;
-            run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
+            println!("📋 已加载的 Playbook：");
+            println!();
+
+            let stats = manager.stats();
+            println!("   来源统计：内置 {}，用户 {}，项目 {}，覆盖 {}",
+                stats.bundled_count, stats.user_count, stats.project_count, stats.overridden_count);
+            println!();
+
+            for pb in manager.list() {
+                println!("   • {} — {}", pb.name, pb.description);
+                println!("     步骤数：{}，运行次数：{}", pb.steps.len(), pb.run_count);
+            }
+
+            if manager.list().is_empty() {
+                println!("   （暂无 Playbook）");
+            }
+
+            println!();
+            println!("💡 在 chat 模式下完成多步任务后，可保存为新 Playbook");
         }
         Commands::History => {
             show_history().await;
@@ -118,8 +113,45 @@ async fn main() -> Result<()> {
         Commands::Undo => {
             println!("⚠️  Undo 需要在 chat 模式下执行（输入 'undo' 命令）");
         }
-        Commands::Playbooks => {
-            println!("📋 Playbook 功能：在 chat 模式下完成多步任务后，系统会提示保存。");
+
+        // 其他命令需要 LLM 配置
+        _ => {
+            // 加载 LLM 配置（CLI > ENV > 默认）
+            let llm_config = LlmConfig::load(
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.base_url.as_deref(),
+            ).unwrap_or_else(|e| {
+                eprintln!("⚠️  配置加载失败: {}", e);
+                std::process::exit(1);
+            });
+
+            info!("LLM Provider: {} @ {} (model: {})",
+                llm_config.provider_kind,
+                llm_config.base_url,
+                llm_config.model
+            );
+
+            match cli.command {
+                Commands::Chat => {
+                    println!("🤖 Agent Unix v0.1.0");
+                    println!("   正在采集系统环境...");
+
+                    let ctx = context::system_scan::scan().await;
+                    println!("   ✅ 系统：{} @ {}", ctx.os_info, ctx.hostname);
+                    println!("   输入 'exit' 退出，'undo' 撤销上一步操作\n");
+
+                    run_chat_loop(&llm_config, &cli.mode, ctx).await?;
+                }
+                Commands::Run {
+                    instruction,
+                    dry_run,
+                } => {
+                    let ctx = context::system_scan::scan().await;
+                    run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
+                }
+                Commands::History | Commands::Undo | Commands::Playbooks => {}
+            }
         }
     }
 
