@@ -8,6 +8,7 @@ mod playbook;
 mod safety;
 mod tools;
 mod types;
+mod user_config;
 mod watchdog;
 
 use anyhow::Result;
@@ -15,7 +16,8 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use agent::r#loop::AgentLoop;
-use config::{LlmConfig, get_provider_presets, find_preset};
+use config::{LlmConfig, get_provider_presets};
+use user_config::{interactive_config, show_current_config, delete_config};
 
 #[derive(Parser)]
 #[command(
@@ -90,9 +92,9 @@ enum Commands {
 
     /// 查看/配置 LLM Provider
     Config {
-        /// 使用预设 Provider（anthropic/openai/openrouter/groq/deepseek）
+        /// 启动交互式配置向导
         #[arg(long)]
-        preset: Option<String>,
+        setup: bool,
 
         /// 显示当前配置
         #[arg(long)]
@@ -101,6 +103,10 @@ enum Commands {
         /// 列出所有支持的 Provider
         #[arg(long)]
         list: bool,
+
+        /// 删除配置文件
+        #[arg(long)]
+        delete: bool,
     },
 
     /// 查看操作历史
@@ -145,7 +151,12 @@ async fn main() -> Result<()> {
         // ═══════════════════════════════════════════════════════
         // 不需要 LLM 的命令
         // ═══════════════════════════════════════════════════════
-        Commands::Config { preset, show, list } => {
+        Commands::Config { setup, show, list, delete } => {
+            if delete {
+                delete_config()?;
+                return Ok(());
+            }
+
             if list {
                 println!("📡 支持的 LLM Provider：");
                 println!();
@@ -159,74 +170,29 @@ async fn main() -> Result<()> {
                     println!();
                 }
 
-                println!("💡 快速配置示例：");
-                println!("   agent-unix config --preset openai");
-                println!("   export OPENAI_API_KEY=sk-xxx");
-                println!("   agent-unix chat");
+                println!("💡 配置方式：");
+                println!("   agent-unix config --setup    # 交互式配置向导（推荐）");
+                println!("   agent-unix config --show     # 查看当前配置");
                 return Ok(());
             }
 
-            if let Some(preset_name) = preset {
-                if let Some(p) = find_preset(&preset_name) {
-                    println!("✅ 已选择 Provider: {}", p.name);
-                    println!();
-                    println!("   Provider: {}", p.provider_kind);
-                    println!("   Base URL: {}", p.base_url);
-                    println!("   默认模型: {}", p.default_model);
-                    println!();
-                    println!("🔑 请设置 API Key：");
-                    println!("   export {}=你的key", p.env_key_name);
-                    println!();
-                    println!("或使用通用变量：");
-                    println!("   export AGENT_UNIX_LLM_API_KEY=你的key");
-                    println!();
-                    println!("然后运行：");
-                    println!("   agent-unix chat");
-                } else {
-                    println!("❌ 未知的预设: {}", preset_name);
-                    println!("   支持的预设: anthropic, openai, openrouter, groq, deepseek");
-                    println!("   运行 'agent-unix config --list' 查看完整列表");
-                }
+            if setup {
+                interactive_config()?;
                 return Ok(());
             }
 
             if show {
-                // 尝试加载当前配置
-                match LlmConfig::load(
-                    cli.provider.as_deref(),
-                    cli.model.as_deref(),
-                    cli.base_url.as_deref(),
-                    cli.api_key.as_deref(),
-                ) {
-                    Ok(config) => {
-                        println!("📡 当前 LLM 配置：");
-                        println!();
-                        println!("   Provider: {}", config.provider_kind);
-                        println!("   Base URL: {}", config.base_url);
-                        println!("   Model: {}", config.model);
-                        println!("   API Key: {}...", config.api_key().chars().take(8).collect::<String>());
-                        println!();
-                        println!("✅ 配置有效，可以开始对话");
-                    }
-                    Err(e) => {
-                        println!("⚠️  配置加载失败：");
-                        println!();
-                        println!("   {}", e);
-                        println!();
-                        println!("💡 解决方法：");
-                        println!("   1. 运行 'agent-unix config --preset anthropic'");
-                        println!("   2. 设置 API Key: export ANTHROPIC_API_KEY=sk-xxx");
-                    }
-                }
+                show_current_config();
                 return Ok(());
             }
 
             // 默认显示帮助
             println!("💡 Config 命令用法：");
             println!();
-            println!("   agent-unix config --list         # 列出支持的 Provider");
-            println!("   agent-unix config --preset openai  # 选择预设");
-            println!("   agent-unix config --show         # 显示当前配置");
+            println!("   agent-unix config --setup    # 启动交互式配置向导（推荐）");
+            println!("   agent-unix config --show     # 显示当前配置");
+            println!("   agent-unix config --list     # 列出支持的 Provider");
+            println!("   agent-unix config --delete   # 删除配置文件");
         }
 
         Commands::Playbooks => {
