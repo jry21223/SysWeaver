@@ -11,7 +11,7 @@ use crate::safety::audit::AuditLogger;
 use crate::safety::classifier::RiskClassifier;
 use crate::tools::ToolManager;
 use crate::types::risk::RiskLevel;
-use crate::types::tool::ToolCall;
+use crate::types::tool::{RollbackPlan, ToolCall, ToolResult};
 
 /// Agent 核心循环：ReAct（Reason → Act → Observe）模式
 pub struct AgentLoop {
@@ -173,8 +173,9 @@ impl AgentLoop {
                         result
                     };
 
-                    // 记录操作
-                    self.memory.record_operation(tool_call, &tool_result, None);
+                    // 记录操作（含 Undo 方案）
+                        let rollback = self.generate_rollback_plan(&tool_call, &tool_result);
+                        self.memory.record_operation(tool_call, &tool_result, rollback);
 
                     // 检查是否需要刷新系统状态（多轮对话后更新环境）
                     if self.memory.needs_refresh() {
@@ -270,6 +271,114 @@ impl AgentLoop {
                 result.stderr.lines().next().unwrap_or("")
             );
         }
+    }
+
+    /// 根据工具调用生成回滚方案
+    fn generate_rollback_plan(&self, call: &ToolCall, result: &ToolResult) -> Option<RollbackPlan> {
+        if !result.success || call.dry_run {
+            return None; // 失败或预览操作无需回滚
+        }
+
+        match call.tool.as_str() {
+            "shell.exec" => self.generate_shell_rollback(call),
+            "file.write" => self.generate_file_write_rollback(call),
+            _ => None, // 只读操作无需回滚
+        }
+    }
+
+    /// 为 shell.exec 生成回滚方案
+    fn generate_shell_rollback(&self, call: &ToolCall) -> Option<RollbackPlan> {
+        let command = call.args["command"].as_str()?;
+        let command_lower = command.to_lowercase();
+
+        // apt install → apt remove
+        if command_lower.contains("apt install") || command_lower.contains("apt-get install") {
+            let pkg = self.extract_package_name(command)?;
+            return Some(RollbackPlan {
+                description: format!("卸载已安装的包: {}", pkg),
+                commands: vec![format!("sudo apt remove -y {}", pkg)],
+                has_side_effects: true,
+            });
+        }
+
+        // yum/dnf install → remove
+        if command_lower.contains("yum install") || command_lower.contains("dnf install") {
+            let pkg = self.extract_package_name(command)?;
+            return Some(RollbackPlan {
+                description: format!("卸载已安装的包: {}", pkg),
+                commands: vec![format!("sudo yum remove -y {}", pkg)],
+                has_side_effects: true,
+            });
+        }
+
+        // useradd → userdel
+        if command_lower.contains("useradd") {
+            let user = self.extract_arg_value(command)?;
+            return Some(RollbackPlan {
+                description: format!("删除已创建的用户: {}", user),
+                commands: vec![format!("sudo userdel -r {}", user)],
+                has_side_effects: true,
+            });
+        }
+
+        // systemctl start → stop
+        if command_lower.contains("systemctl start") {
+            let service = self.extract_arg_value(command)?;
+            return Some(RollbackPlan {
+                description: format!("停止已启动的服务: {}", service),
+                commands: vec![format!("sudo systemctl stop {}", service)],
+                has_side_effects: false,
+            });
+        }
+
+        // systemctl stop → start (需要知道之前状态)
+        if command_lower.contains("systemctl stop") {
+            let service = self.extract_arg_value(command)?;
+            return Some(RollbackPlan {
+                description: format!("重新启动已停止的服务: {}", service),
+                commands: vec![format!("sudo systemctl start {}", service)],
+                has_side_effects: false,
+            });
+        }
+
+        // rm 文件删除无法简单回滚（需备份，暂不支持）
+        if command_lower.starts_with("rm") {
+            return Some(RollbackPlan {
+                description: "文件删除操作无法自动回滚（需要备份文件）".to_string(),
+                commands: vec![], // 空数组表示无法自动回滚
+                has_side_effects: true,
+            });
+        }
+
+        None
+    }
+
+    /// 从命令中提取包名
+    fn extract_package_name(&self, command: &str) -> Option<String> {
+        // 支持 "apt install pkg1 pkg2" 和 "apt install -y pkg"
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        for part in parts.iter().skip_while(|p| **p != "install").skip(1) {
+            if !part.starts_with('-') {
+                return Some(part.to_string());
+            }
+        }
+        None
+    }
+
+    /// 从命令中提取最后一个参数值（适用于 useradd、systemctl 等）
+    fn extract_arg_value(&self, command: &str) -> Option<String> {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        parts.last().map(|s| s.to_string())
+    }
+
+    /// 为 file.write 生成回滚方案（需要知道原内容）
+    fn generate_file_write_rollback(&self, call: &ToolCall) -> Option<RollbackPlan> {
+        let path = call.args["path"].as_str()?;
+        Some(RollbackPlan {
+            description: format!("恢复文件 {} 的原始内容（需要备份）", path),
+            commands: vec![], // 实际回滚需要先备份原内容，暂不支持自动回滚
+            has_side_effects: true,
+        })
     }
 
     /// 格式化工具结果为 LLM 可读文本
