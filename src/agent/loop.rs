@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::agent::memory::{Memory, SystemContext};
 use crate::config::LlmConfig;
+use crate::context::system_scan;
 use crate::llm::client::{LlmClient, LlmResponse};
 use crate::llm::prompt::build_system_prompt;
 use crate::safety::audit::AuditLogger;
@@ -174,6 +175,13 @@ impl AgentLoop {
 
                     // 记录操作
                     self.memory.record_operation(tool_call, &tool_result, None);
+
+                    // 检查是否需要刷新系统状态（多轮对话后更新环境）
+                    if self.memory.needs_refresh() {
+                        let new_ctx = system_scan::scan().await;
+                        self.memory.refresh_system_context(new_ctx);
+                        tracing::debug!("系统状态已刷新");
+                    }
 
                     // 构建工具结果内容反馈给 LLM
                     let result_content = self.format_tool_result(&tool_result);

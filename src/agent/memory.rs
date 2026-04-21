@@ -12,6 +12,10 @@ pub struct Memory {
     pub system_context: Option<SystemContext>,
     /// 最大保留消息数（Token 窗口管理）
     pub max_messages: usize,
+    /// 自上次刷新后的操作计数
+    ops_since_refresh: usize,
+    /// 刷新阈值（每 N 步操作刷新系统状态）
+    refresh_threshold: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +38,20 @@ impl Memory {
             operations: Vec::new(),
             system_context: None,
             max_messages: 50,
+            ops_since_refresh: 0,
+            refresh_threshold: 5,
         }
+    }
+
+    /// 刷新系统上下文
+    pub fn refresh_system_context(&mut self, ctx: SystemContext) {
+        self.system_context = Some(ctx);
+        self.ops_since_refresh = 0;
+    }
+
+    /// 检查是否需要刷新系统状态
+    pub fn needs_refresh(&self) -> bool {
+        self.ops_since_refresh >= self.refresh_threshold
     }
 
     /// 添加用户文本消息
@@ -101,6 +118,8 @@ impl Memory {
             rollback,
             timestamp: Utc::now(),
         });
+        // 增加操作计数（用于系统状态刷新检测）
+        self.ops_since_refresh += 1;
     }
 
     /// 获取最近一次可回滚的操作

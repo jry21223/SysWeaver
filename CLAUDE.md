@@ -55,35 +55,24 @@ src/
 - CLI 入口（`main.rs`）— 支持交互式 chat 和单条 run
 - **Agent 核心循环**（`agent/loop.rs`）— ReAct 模式已实现
 - **自定义 Provider 配置**（`config.rs`）— 支持 Anthropic 和 OpenAI-compatible
+- **确认对话框 UI** — HIGH 风险时终端交互确认
+- **Dry-Run 模式** — `--dry-run` 标志透传到所有工具
+- **系统状态更新机制** — 每 5 步操作自动刷新环境快照
 
 ### 🚧 需要实现（按优先级）
 
-**Phase 2（安全，对应 15 分）**
-
-1. **确认对话框 UI** — HIGH 风险时终端交互确认
-   - 展示：风险等级、具体原因、影响范围、替代建议
-   - 等待用户输入 `yes` 才继续
-
-2. **Dry-Run 模式** — `--dry-run` 标志透传到所有工具
-   - `ToolCall.dry_run = true` 时，工具返回预览而不执行
-
-**Phase 3（环境感知，对应 20 分）**
-
-3. **`memory.rs`** 中的系统状态更新机制
-   - 多轮对话后，主动刷新系统状态快照
-
 **Phase 4（连续任务，对应 15 分）**
 
-4. **`agent/planner.rs`** — 接入 LLM 做真正的任务分解（现在是规则匹配）
+1. **`agent/planner.rs`** — 接入 LLM 做真正的任务分解（现在是规则匹配）
 
-5. **Undo 功能** — `main.rs` 中 `Commands::Undo`
+2. **Undo 功能** — `main.rs` 中 `Commands::Undo`
    - 从 `Memory.last_undoable()` 取回滚方案并执行
 
-6. **Playbook** — `Commands::Playbooks` 和保存/读取逻辑
+3. **Playbook** — `Commands::Playbooks` 和保存/读取逻辑
 
 **Phase 5（创新，对应主观分）**
-7. **反向解释模式** — 读取配置文件并让 LLM 解释
-8. **Watchdog** — `tokio::spawn` 后台监控 + `mpsc::channel` 发送告警
+4. **反向解释模式** — 读取配置文件并让 LLM 解释
+5. **Watchdog** — `tokio::spawn` 后台监控 + `mpsc::channel` 发送告警
 
 ## 关键约束（必须遵守）
 
