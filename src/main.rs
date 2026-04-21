@@ -2,11 +2,13 @@ mod agent;
 mod config;
 mod context;
 mod executor;
+mod explainer;
 mod llm;
 mod playbook;
 mod safety;
 mod tools;
 mod types;
+mod watchdog;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -65,6 +67,17 @@ enum Commands {
     Undo,
     /// 列出保存的 Playbook
     Playbooks,
+    /// 反向解释模式：读取并解释配置文件
+    Explain {
+        /// 要解释的文件路径（不指定则列出支持的文件）
+        file: Option<String>,
+    },
+    /// 启动后台监控系统
+    Watch {
+        /// 监控持续时间（秒），默认 60 秒
+        #[arg(long, default_value = "60")]
+        duration: u64,
+    },
 }
 
 #[tokio::main]
@@ -113,6 +126,82 @@ async fn main() -> Result<()> {
         Commands::Undo => {
             println!("⚠️  Undo 需要在 chat 模式下执行（输入 'undo' 命令）");
         }
+        Commands::Explain { file } => {
+            use explainer::Explainer;
+
+            let explainer = Explainer::new();
+
+            match file {
+                None => {
+                    println!("📖 反向解释模式 — 支持的文件类型：");
+                    println!();
+
+                    for (desc, _path) in explainer.list_supported_files() {
+                        println!("   • {}", desc);
+                    }
+
+                    println!();
+                    println!("💡 使用方式：agent-unix explain <文件路径>");
+                    println!("   示例：agent-unix explain /etc/nginx/nginx.conf");
+                }
+                Some(path) => {
+                    println!("📖 正在读取文件: {}", path);
+
+                    match explainer.read_file(&path) {
+                        Ok(content) => {
+                            println!("   文件大小: {} 字节", content.len());
+                            println!();
+
+                            // 检测文件类型
+                            let file_type = explainer.detect_type(&path)
+                                .unwrap_or_else(|| "配置文件".to_string());
+
+                            println!("📝 文件内容（前 500 字符）：");
+                            println!("{}", content.chars().take(500).collect::<String>());
+                            println!();
+
+                            // 生成解释提示词（供 LLM 使用）
+                            let prompt = explainer.build_explanation_prompt(&file_type, &content);
+                            println!("💡 可将以下提示词发给 Agent 进行解释：");
+                            println!();
+                            println!("{}", prompt.lines().take(10).collect::<Vec<_>>().join("\n"));
+                        }
+                        Err(e) => {
+                            println!("❌ 读取失败: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        Commands::Watch { duration } => {
+            use watchdog::create_watchdog_system;
+
+            println!("🔍 启动 Watchdog 监控系统");
+            println!("   监控规则：磁盘使用率（>80%/95%）、内存使用率（>85%/95%）");
+            println!("   监控时长：{} 秒", duration);
+            println!();
+
+            let (watchdog, mut handler) = create_watchdog_system();
+
+            // 启动监控
+            watchdog.start();
+
+            // 启动告警处理器（后台）
+            let handler_task = tokio::spawn(async move {
+                handler.run().await;
+            });
+
+            // 等待指定时长
+            tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
+
+            // 停止监控
+            watchdog.stop();
+
+            // 等待处理器完成
+            handler_task.await?;
+
+            println!("\n✅ 监控已完成");
+        }
 
         // 其他命令需要 LLM 配置
         _ => {
@@ -150,7 +239,7 @@ async fn main() -> Result<()> {
                     let ctx = context::system_scan::scan().await;
                     run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
                 }
-                Commands::History | Commands::Undo | Commands::Playbooks => {}
+                Commands::History | Commands::Undo | Commands::Playbooks | Commands::Explain { .. } | Commands::Watch { .. } => {}
             }
         }
     }
