@@ -15,15 +15,15 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: agent-unix-macos-arm64
+            artifact: jij-macos-arm64
 
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: agent-unix-linux-x86_64
+            artifact: jij-linux-x86_64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: agent-unix-windows-x86_64.exe
+            artifact: jij-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -49,12 +49,12 @@ jobs:
       - name: 重命名二进制文件（Unix）
         if: runner.os != 'Windows'
         run: |
-          cp target/${{ matrix.target }}/release/agent-unix ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/jij ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
 
       - name: 重命名二进制文件（Windows）
         if: runner.os == 'Windows'
-        run: copy target\${{ matrix.target }}\release\agent-unix.exe ${{ matrix.artifact }}
+        run: copy target\${{ matrix.target }}\release\jij.exe ${{ matrix.artifact }}
         shell: cmd
 
       - name: 获取二进制信息（Unix）
@@ -69,7 +69,7 @@ jobs:
       - name: 上传构件
         uses: actions/upload-artifact@v4
         with:
-          name: agent-unix-${{ matrix.target }}
+          name: jij-${{ matrix.target }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
@@ -104,28 +104,24 @@ jobs:
         with:
           files: releases/*
           body: |
-            # Agent Unix Release
+            # jij Release
 
             此版本包含以下平台的二进制文件：
-            - **macOS arm64 (Apple Silicon)** - `agent-unix-macos-arm64`
-            - **Linux x86_64** - `agent-unix-linux-x86_64`
-            - **Windows x86_64** - `agent-unix-windows-x86_64.exe`
+            - **macOS arm64 (Apple Silicon)** - `jij-macos-arm64`
+            - **Linux x86_64** - `jij-linux-x86_64`
+            - **Windows x86_64** - `jij-windows-x86_64.exe`
 
             ## 使用方法
 
-            ### macOS
+            ### macOS / Linux
             ```bash
-            ./agent-unix-macos-arm64 chat
-            ```
-
-            ### Linux
-            ```bash
-            ./agent-unix-linux-x86_64 chat
+            chmod +x jij-macos-arm64
+            ./jij-macos-arm64 chat
             ```
 
             ### Windows
             ```cmd
-            agent-unix-windows-x86_64.exe chat
+            jij-windows-x86_64.exe chat
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
