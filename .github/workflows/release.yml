@@ -33,23 +33,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: 缓存 cargo 注册表
-        uses: actions/cache@v3
+      - name: 缓存 cargo
+        uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: 缓存 cargo 索引
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: 缓存 cargo 构建
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: 编译 Release 版本
         run: cargo build --release --target ${{ matrix.target }}
@@ -70,7 +62,7 @@ jobs:
           ls -lh ${{ matrix.artifact }} || dir ${{ matrix.artifact }}
 
       - name: 上传构件
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: agent-unix-${{ matrix.target }}
           path: ${{ matrix.artifact }}
@@ -86,7 +78,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 下载所有构件
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
