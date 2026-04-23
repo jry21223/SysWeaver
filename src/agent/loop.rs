@@ -87,7 +87,7 @@ impl AgentLoop {
             audit: AuditLogger::new(&session_id),
             memory,
             mode: mode.to_string(),
-            max_steps: 15,
+            max_steps: 20,
             tui_tx,
         }
     }
@@ -640,6 +640,59 @@ impl AgentLoop {
         parts.last().map(|s| s.to_string())
     }
 
+    /// 生成本次会话的自然语言摘要（调用 LLM 总结操作记录）
+    pub async fn generate_session_summary(&mut self) -> Result<String> {
+        if self.memory.operations.is_empty() {
+            return Ok("本次会话没有执行任何操作。".to_string());
+        }
+
+        let total = self.memory.operations.len();
+        let success_count = self.memory.operations.iter()
+            .filter(|op| op.result.as_ref().map(|r| r.success).unwrap_or(false))
+            .count();
+
+        let ops_text: Vec<String> = self.memory.operations.iter()
+            .enumerate()
+            .map(|(i, op)| {
+                let ok = op.result.as_ref().map(|r| r.success).unwrap_or(false);
+                let status = if ok { "成功" } else { "失败" };
+                let detail = op.tool_call.reason.as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.chars().take(80).collect::<String>())
+                    .unwrap_or_else(|| op.tool_call.tool.clone());
+                format!("{}. [{}] {}", i + 1, status, detail)
+            })
+            .collect();
+
+        let prompt = format!(
+            "根据以下 {} 条操作记录（成功 {}，失败 {}），请用 2-4 句自然语言中文总结本次会话的主要工作和结果。\
+            不要列举工具名称，侧重于实际完成的系统管理任务。\n\n操作记录：\n{}",
+            total,
+            success_count,
+            total - success_count,
+            ops_text.join("\n")
+        );
+
+        let messages = vec![serde_json::json!({ "role": "user", "content": prompt })];
+        let system = "你是一名专业的 Linux 系统运维助手，请用简洁中文总结运维操作记录。";
+
+        match self.llm.chat(system, &messages, &[]).await {
+            Ok(LlmResponse::FinalAnswer(text)) => Ok(text),
+            Ok(_) => Ok("（LLM 未返回摘要文本）".to_string()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 获取会话操作统计数据：(总步数, 成功数, 拦截/失败数)
+    pub fn session_stats(&self) -> (usize, usize, usize) {
+        let total = self.memory.operations.len();
+        let success = self.memory.operations.iter()
+            .filter(|op| op.result.as_ref().map(|r| r.success).unwrap_or(false))
+            .count();
+        let failed = total - success;
+        (total, success, failed)
+    }
+
     /// 测试辅助：暴露 shell rollback 生成（仅测试可见）
     #[cfg(test)]
     pub fn generate_shell_rollback_test(&self, call: &ToolCall) -> Option<RollbackPlan> {
@@ -907,5 +960,30 @@ mod tests {
         let agent = make_agent();
         let summary = agent.get_history_summary();
         assert!(summary.contains("暂无"));
+    }
+
+    // ── session_stats ─────────────────────────────────────────────────────
+
+    #[test]
+    fn session_stats_empty_returns_zeros() {
+        let agent = make_agent();
+        let (total, success, blocked) = agent.session_stats();
+        assert_eq!(total, 0);
+        assert_eq!(success, 0);
+        assert_eq!(blocked, 0);
+    }
+
+    #[test]
+    fn session_stats_counts_success_correctly() {
+        let mut agent = make_agent();
+        let call = shell_call("ls -la");
+        let result_ok = ToolResult::success("shell.exec", "total 0", 5);
+        let result_fail = ToolResult::failure("shell.exec", "not found", 1);
+        agent.memory.record_operation(call.clone(), &result_ok, None);
+        agent.memory.record_operation(call.clone(), &result_fail, None);
+        let (total, success, failed) = agent.session_stats();
+        assert_eq!(total, 2);
+        assert_eq!(success, 1);
+        assert_eq!(failed, 1);
     }
 }

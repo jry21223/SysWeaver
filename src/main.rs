@@ -550,8 +550,29 @@ async fn run_chat_loop(
                     handle_playbook_inline(&mut agent, input, llm_config).await?;
                     continue;
                 }
+                if input == "/summary" {
+                    let op_count = agent.memory.operations.len();
+                    if op_count == 0 {
+                        println!("\n📝 本次会话暂无操作记录，尚未执行任何工具调用。\n");
+                    } else {
+                        println!("\n⏳ 正在生成会话摘要（共 {} 条操作记录）…", op_count);
+                        match agent.generate_session_summary().await {
+                            Ok(summary) => {
+                                let (total, success, blocked) = agent.session_stats();
+                                println!("\n📝 会话摘要");
+                                println!("   操作统计: {} 步 | ✅ {} 成功 | ❌ {} 失败/拦截", total, success, total - success - blocked);
+                                println!();
+                                println!("{}\n", summary);
+                            }
+                            Err(e) => println!("\n❌ 生成摘要失败: {}\n", e),
+                        }
+                    }
+                    continue;
+                }
                 if input == "/report" {
-                    handle_report_inline().await;
+                    let session_summary = agent.get_history_summary();
+                    let (total, success, _blocked) = agent.session_stats();
+                    handle_report_inline(Some((session_summary, total, success))).await;
                     continue;
                 }
 
@@ -600,15 +621,36 @@ async fn run_chat_loop(
                             }
                             println!();
                         }
+                        let ops_before = agent.memory.operations.len();
+                        let task_start = std::time::Instant::now();
                         match agent.run_with_images(&actual_input, &images, false).await {
-                            Ok(response) => println!("\n🤖 Agent：{}\n", response),
+                            Ok(response) => {
+                                println!("\n🤖 Agent：{}\n", response);
+                                let elapsed = task_start.elapsed();
+                                let new_ops = agent.memory.operations.len() - ops_before;
+                                if new_ops > 1 {
+                                    let success_ops = agent.memory.operations[ops_before..]
+                                        .iter()
+                                        .filter(|o| o.result.as_ref().map(|r| r.success).unwrap_or(false))
+                                        .count();
+                                    println!("   ⏱️  耗时 {:.1}s | {} 步操作 | ✅ {} 成功 | ❌ {} 失败\n",
+                                        elapsed.as_secs_f64(), new_ops, success_ops, new_ops - success_ops);
+                                }
+                            }
                             Err(e) => println!("\n❌ 错误: {}\n", e),
                         }
                     }
                     Err(err) => {
                         tracing::warn!("Planner 分析失败，回退到直接执行: {}", err);
+                        let task_start = std::time::Instant::now();
                         match agent.run_with_images(final_input, &images, false).await {
-                            Ok(response) => println!("\n🤖 Agent：{}\n", response),
+                            Ok(response) => {
+                                let elapsed = task_start.elapsed();
+                                println!("\n🤖 Agent：{}\n", response);
+                                if elapsed.as_secs_f64() > 2.0 {
+                                    println!("   ⏱️  耗时 {:.1}s\n", elapsed.as_secs_f64());
+                                }
+                            }
                             Err(e) => println!("\n❌ 错误: {}\n", e),
                         }
                     }
@@ -1012,16 +1054,17 @@ fn print_help_message() {
     println!("\n📖 jij 帮助");
     println!();
     println!("【命令列表】");
-    println!("   /help    显示此帮助");
-    println!("   /status  实时采集并显示系统状态");
-    println!("   /history 查看操作历史");
-    println!("   /undo    撤销上一步操作");
-    println!("   /clear   清除对话上下文，重新开始");
-    println!("   /report  生成系统健康综合报告");
+    println!("   /help     显示此帮助");
+    println!("   /status   实时采集并显示系统状态");
+    println!("   /history  查看操作历史（最近 10 步）");
+    println!("   /summary  AI 生成本次会话的自然语言操作总结");
+    println!("   /report   生成系统健康综合报告（含会话操作摘要）");
+    println!("   /undo     撤销上一步操作");
+    println!("   /clear    清除对话上下文，重新开始");
     println!("   /playbook list          列出 Playbook");
     println!("   /playbook save <名称>   保存最近操作为 Playbook");
     println!("   /playbook run <名称>    执行 Playbook");
-    println!("   /exit    退出");
+    println!("   /exit     退出");
     println!();
     println!("【示例指令】");
     println!("   · 查看磁盘使用情况");
@@ -1037,7 +1080,8 @@ fn print_help_message() {
     println!();
 }
 
-async fn handle_report_inline() {
+/// session_info: Option<(history_summary, total_ops, success_ops)>
+async fn handle_report_inline(session_info: Option<(String, usize, usize)>) {
     use chrono::Local;
     println!("\n⏳ 生成系统健康报告…");
     let ctx = context::system_scan::scan().await;
@@ -1077,6 +1121,15 @@ async fn handle_report_inline() {
         println!("╟──────────────────────────────────────────────────────╢");
         for a in &anomalies {
             println!("  {}", a);
+        }
+    }
+    if let Some((history, total, success)) = session_info {
+        if total > 0 {
+            println!("╟──────────────────────────────────────────────────────╢");
+            println!("║  本次会话操作摘要                                    ║");
+            println!("╟──────────────────────────────────────────────────────╢");
+            println!("  操作统计：{} 步 | ✅ {} 成功 | ❌ {} 失败", total, success, total - success);
+            println!("{}", history);
         }
     }
     println!("╚══════════════════════════════════════════════════════╝\n");
