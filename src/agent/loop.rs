@@ -230,12 +230,15 @@ impl AgentLoop {
             let anomalies = system_scan::detect_anomalies(&new_ctx);
             self.memory.refresh_system_context(new_ctx.clone());
 
-            // 检测到异常时，通过事件通道发出告警
+            // 检测到异常时，通过事件通道发出告警（CLI 模式下直接打印）
             if !anomalies.is_empty() {
                 let warning = format!(
                     "⚠️ 系统状态更新警告：检测到以下异常情况，请在后续操作中注意：\n{}",
                     anomalies.iter().map(|a| format!("  - {}", a)).collect::<Vec<_>>().join("\n")
                 );
+                if self.tui_tx.is_none() {
+                    println!("\n{}", warning);
+                }
                 self.emit(AgentEvent::WatchdogAlert {
                     severity: "⚠️ WARNING".to_string(),
                     message: warning,
@@ -493,8 +496,14 @@ impl AgentLoop {
                 dry_run: call.dry_run,
             }).await;
         } else {
-            let prefix = if call.dry_run { "[DRY-RUN] " } else { "" };
-            println!("\n🔧 Step {}: {}{}({})", step, prefix, call.tool, args);
+            let prefix = if call.dry_run { " [DRY-RUN]" } else { "" };
+            // Show LLM's reasoning text first if available, then tool details
+            if let Some(reason) = &call.reason {
+                println!("\n💭 {}", reason);
+                println!("   ▶ 执行操作{}: {}", prefix, call.tool);
+            } else {
+                println!("\n🔧 Step {}{}: {}", step, prefix, call.tool);
+            }
         }
     }
 

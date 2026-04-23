@@ -350,10 +350,19 @@ impl LlmClient {
                 let tool_name = tool_block["name"].as_str().unwrap_or("").to_string();
                 let tool_input = tool_block["input"].clone();
 
+                // Extract LLM's text explanation (appears before tool_use block) as reason
+                let reason = content
+                    .iter()
+                    .find(|b| b["type"] == "text")
+                    .and_then(|b| b["text"].as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
                 let tool_call = ToolCall {
                     tool: tool_name,
                     args: tool_input,
-                    reason: None,
+                    reason,
                     dry_run: false,
                 };
 
@@ -400,10 +409,17 @@ impl LlmClient {
                     let tool_input = serde_json::from_str::<serde_json::Value>(args_str)
                         .map_err(|e| anyhow::anyhow!("tool arguments JSON 解析失败: {}", e))?;
 
+                    // Extract LLM's text explanation as reason
+                    let reason = message["content"]
+                        .as_str()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
                     let tool_call = ToolCall {
                         tool: tool_name.clone(),
                         args: tool_input.clone(),
-                        reason: None,
+                        reason,
                         dry_run: false,
                     };
 

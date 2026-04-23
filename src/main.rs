@@ -30,7 +30,7 @@ use user_config::{delete_config, interactive_config, show_current_config};
 #[command(
     name = "jij",
     about = "jij — 自然语言操作系统管理代理",
-    version = "0.2.4",
+    version = env!("CARGO_PKG_VERSION"),
     long_about = "
 用自然语言管理你的 Linux/macOS/Windows 系统。
 
@@ -327,7 +327,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Info => {
-            println!("🤖 jij v0.2.3");
+            println!("🤖 jij v{}", env!("CARGO_PKG_VERSION"));
             println!("   AI Hackathon 2026 · 超聚变 αFUSION 预赛");
             println!();
             println!("⏳ 正在采集系统信息…");
@@ -416,7 +416,7 @@ async fn main() -> Result<()> {
                     if cli.no_tui {
                         // ── CLI fallback 模式 ─────────────────────────────
                         let mode_label = if ssh_config.is_some() { "SSH 远程模式" } else { "CLI 本地模式" };
-                        println!("🤖 jij v0.2.3  [{}]", mode_label);
+                        println!("🤖 jij v{}  [{}]", env!("CARGO_PKG_VERSION"), mode_label);
                         println!("   Provider: {} @ {}", llm_config.provider_kind, llm_config.base_url);
                         println!();
                         println!("【系统环境】");
