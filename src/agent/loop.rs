@@ -631,6 +631,18 @@ impl AgentLoop {
         parts.last().map(|s| s.to_string())
     }
 
+    /// 测试辅助：暴露 shell rollback 生成（仅测试可见）
+    #[cfg(test)]
+    pub fn generate_shell_rollback_test(&self, call: &ToolCall) -> Option<RollbackPlan> {
+        self.generate_shell_rollback(call)
+    }
+
+    /// 测试辅助：暴露 file.write rollback 生成（仅测试可见）
+    #[cfg(test)]
+    pub fn generate_file_write_rollback_test(&self, call: &ToolCall, result: &ToolResult) -> Option<RollbackPlan> {
+        self.generate_file_write_rollback_with_result(call, result)
+    }
+
     /// 为 file.write 生成回滚方案（从 ToolResult 中提取备份路径）
     fn generate_file_write_rollback_with_result(&self, call: &ToolCall, result: &ToolResult) -> Option<RollbackPlan> {
         let path = call.args["path"].as_str()?;
@@ -651,6 +663,12 @@ impl AgentLoop {
                 has_side_effects: true,
             }),
         }
+    }
+
+    /// 格式化工具结果为 LLM 可读文本（测试可见）
+    #[cfg(test)]
+    pub fn format_tool_result_test(&self, result: &crate::types::tool::ToolResult) -> String {
+        self.format_tool_result(result)
     }
 
     /// 格式化工具结果为 LLM 可读文本
@@ -678,5 +696,207 @@ impl AgentLoop {
                 result.exit_code, result.stderr
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{LlmConfig, LlmProviderKind};
+    use crate::agent::memory::SystemContext;
+    use crate::types::tool::{ToolCall, ToolResult};
+    use chrono::Utc;
+    use serde_json::json;
+
+    fn dummy_config() -> LlmConfig {
+        LlmConfig::new_test(
+            LlmProviderKind::Anthropic,
+            "https://api.anthropic.com",
+            "claude-haiku-4-5-20251001",
+        )
+    }
+
+    fn dummy_ctx() -> SystemContext {
+        SystemContext {
+            os_info: "Linux".to_string(),
+            hostname: "testhost".to_string(),
+            cpu_info: "2 cores".to_string(),
+            memory_info: "4GB".to_string(),
+            disk_info: "50GB".to_string(),
+            running_services: vec![],
+            package_manager: "apt".to_string(),
+            network_info: "lo: 127.0.0.1".to_string(),
+            collected_at: Utc::now(),
+        }
+    }
+
+    fn make_agent() -> AgentLoop {
+        AgentLoop::new(dummy_config(), "normal", dummy_ctx())
+    }
+
+    fn shell_call(cmd: &str) -> ToolCall {
+        ToolCall {
+            tool: "shell.exec".to_string(),
+            args: json!({"command": cmd}),
+            reason: None,
+            dry_run: false,
+        }
+    }
+
+    fn file_write_call(path: &str) -> ToolCall {
+        ToolCall {
+            tool: "file.write".to_string(),
+            args: json!({"path": path, "content": "new content"}),
+            reason: None,
+            dry_run: false,
+        }
+    }
+
+    // ── format_tool_result ────────────────────────────────────────────────
+
+    #[test]
+    fn format_dry_run_result_includes_preview_prefix() {
+        let agent = make_agent();
+        let result = ToolResult::dry_run_preview("shell.exec", "would run: ls -la");
+        let text = agent.format_tool_result_test(&result);
+        assert!(text.starts_with("[DRY-RUN 预览]"));
+        assert!(text.contains("would run: ls -la"));
+    }
+
+    #[test]
+    fn format_success_result_with_output() {
+        let agent = make_agent();
+        let result = ToolResult::success("shell.exec", "hello world", 10);
+        let text = agent.format_tool_result_test(&result);
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn format_success_result_with_empty_output() {
+        let agent = make_agent();
+        let result = ToolResult::success("shell.exec", "", 10);
+        let text = agent.format_tool_result_test(&result);
+        assert_eq!(text, "操作成功（无输出）");
+    }
+
+    #[test]
+    fn format_failure_result_includes_exit_code_and_stderr() {
+        let agent = make_agent();
+        let result = ToolResult::failure("shell.exec", "command not found", 127);
+        let text = agent.format_tool_result_test(&result);
+        assert!(text.contains("127"));
+        assert!(text.contains("command not found"));
+    }
+
+    #[test]
+    fn format_long_output_is_truncated_at_4000_chars() {
+        let agent = make_agent();
+        let long_output = "x".repeat(5000);
+        let result = ToolResult::success("shell.exec", &long_output, 10);
+        let text = agent.format_tool_result_test(&result);
+        assert!(text.contains("[...输出已截断，共 5000 字符]"));
+        // truncated prefix should be at most 4000 chars of 'x' plus the suffix
+        let x_count = text.chars().take_while(|&c| c == 'x').count();
+        assert_eq!(x_count, 4000);
+    }
+
+    // ── generate_shell_rollback ───────────────────────────────────────────
+
+    #[test]
+    fn rollback_apt_install_generates_remove_command() {
+        let agent = make_agent();
+        let call = shell_call("sudo apt install -y nginx");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands[0].contains("apt remove"));
+        assert!(plan.commands[0].contains("nginx"));
+    }
+
+    #[test]
+    fn rollback_yum_install_generates_remove_command() {
+        let agent = make_agent();
+        let call = shell_call("sudo yum install -y httpd");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands[0].contains("yum remove"));
+        assert!(plan.commands[0].contains("httpd"));
+    }
+
+    #[test]
+    fn rollback_useradd_generates_userdel_command() {
+        let agent = make_agent();
+        let call = shell_call("sudo useradd testuser");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands[0].contains("userdel"));
+        assert!(plan.commands[0].contains("testuser"));
+    }
+
+    #[test]
+    fn rollback_systemctl_start_generates_stop_command() {
+        let agent = make_agent();
+        let call = shell_call("sudo systemctl start nginx");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands[0].contains("systemctl stop"));
+        assert!(plan.commands[0].contains("nginx"));
+    }
+
+    #[test]
+    fn rollback_systemctl_stop_generates_start_command() {
+        let agent = make_agent();
+        let call = shell_call("sudo systemctl stop nginx");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands[0].contains("systemctl start"));
+        assert!(plan.commands[0].contains("nginx"));
+    }
+
+    #[test]
+    fn rollback_rm_returns_plan_with_empty_commands() {
+        let agent = make_agent();
+        let call = shell_call("rm -f /tmp/test.log");
+        let plan = agent.generate_shell_rollback_test(&call).unwrap();
+        assert!(plan.commands.is_empty());
+        assert!(plan.has_side_effects);
+    }
+
+    #[test]
+    fn rollback_unknown_command_returns_none() {
+        let agent = make_agent();
+        let call = shell_call("ls -la /tmp");
+        let plan = agent.generate_shell_rollback_test(&call);
+        assert!(plan.is_none());
+    }
+
+    // ── generate_file_write_rollback ──────────────────────────────────────
+
+    #[test]
+    fn file_write_rollback_with_backup_path_in_stdout() {
+        let agent = make_agent();
+        let call = file_write_call("/etc/nginx/nginx.conf");
+        let result = ToolResult::success(
+            "file.write",
+            "写入成功\n[BACKUP:/tmp/nginx.conf.20240101.bak]",
+            20,
+        );
+        let plan = agent.generate_file_write_rollback_test(&call, &result).unwrap();
+        assert!(plan.commands[0].contains("/tmp/nginx.conf.20240101.bak"));
+        assert!(plan.commands[0].contains("/etc/nginx/nginx.conf"));
+        assert!(!plan.has_side_effects);
+    }
+
+    #[test]
+    fn file_write_rollback_without_backup_has_empty_commands() {
+        let agent = make_agent();
+        let call = file_write_call("/etc/hosts");
+        let result = ToolResult::success("file.write", "写入成功（无备份）", 15);
+        let plan = agent.generate_file_write_rollback_test(&call, &result).unwrap();
+        assert!(plan.commands.is_empty());
+        assert!(plan.has_side_effects);
+    }
+
+    // ── get_history_summary ───────────────────────────────────────────────
+
+    #[test]
+    fn get_history_summary_empty_returns_no_record_message() {
+        let agent = make_agent();
+        let summary = agent.get_history_summary();
+        assert!(summary.contains("暂无"));
     }
 }

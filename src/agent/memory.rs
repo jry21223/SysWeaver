@@ -453,3 +453,200 @@ impl Default for Memory {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::tool::{RollbackPlan, ToolCall, ToolResult};
+    use serde_json::json;
+
+    fn make_context() -> SystemContext {
+        SystemContext {
+            os_info: "Linux".to_string(),
+            hostname: "testhost".to_string(),
+            cpu_info: "4 cores".to_string(),
+            memory_info: "8GB".to_string(),
+            disk_info: "100GB".to_string(),
+            running_services: vec![],
+            package_manager: "apt".to_string(),
+            network_info: "eth0: 10.0.0.1".to_string(),
+            collected_at: Utc::now(),
+        }
+    }
+
+    fn make_call(tool: &str) -> ToolCall {
+        ToolCall {
+            tool: tool.to_string(),
+            args: json!({"command": "ls"}),
+            reason: None,
+            dry_run: false,
+        }
+    }
+
+    fn make_result(success: bool) -> ToolResult {
+        if success {
+            ToolResult::success("shell.exec", "output", 50)
+        } else {
+            ToolResult::failure("shell.exec", "error", 1)
+        }
+    }
+
+    #[test]
+    fn new_memory_starts_empty() {
+        let mem = Memory::new();
+        assert!(mem.messages.is_empty());
+        assert!(mem.operations.is_empty());
+        assert!(mem.system_context.is_none());
+    }
+
+    #[test]
+    fn needs_refresh_false_initially() {
+        assert!(!Memory::new().needs_refresh());
+    }
+
+    #[test]
+    fn needs_refresh_true_after_threshold_operations() {
+        let mut mem = Memory::new();
+        for _ in 0..mem.refresh_threshold {
+            mem.record_operation(make_call("shell.exec"), &make_result(true), None);
+        }
+        assert!(mem.needs_refresh());
+    }
+
+    #[test]
+    fn refresh_system_context_resets_ops_counter() {
+        let mut mem = Memory::new();
+        for _ in 0..mem.refresh_threshold {
+            mem.record_operation(make_call("shell.exec"), &make_result(true), None);
+        }
+        assert!(mem.needs_refresh());
+        mem.refresh_system_context(make_context());
+        assert!(!mem.needs_refresh());
+    }
+
+    #[test]
+    fn push_user_text_adds_message_with_correct_role() {
+        let mut mem = Memory::new();
+        mem.push_user_text("hello");
+        assert_eq!(mem.messages.len(), 1);
+        assert_eq!(mem.messages[0]["role"], "user");
+        assert_eq!(mem.messages[0]["content"], "hello");
+    }
+
+    #[test]
+    fn push_assistant_text_adds_message_with_correct_role() {
+        let mut mem = Memory::new();
+        mem.push_assistant_text("world");
+        assert_eq!(mem.messages.len(), 1);
+        assert_eq!(mem.messages[0]["role"], "assistant");
+        assert_eq!(mem.messages[0]["content"], "world");
+    }
+
+    #[test]
+    fn push_tool_result_adds_correctly_formatted_message() {
+        let mut mem = Memory::new();
+        mem.push_tool_result("tid_1", "result content", false);
+        assert_eq!(mem.messages.len(), 1);
+        let content = mem.messages[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "tid_1");
+        assert_eq!(content[0]["content"], "result content");
+        assert_eq!(content[0]["is_error"], false);
+    }
+
+    #[test]
+    fn push_tool_result_error_flag_set_correctly() {
+        let mut mem = Memory::new();
+        mem.push_tool_result("tid_err", "something failed", true);
+        let content = mem.messages[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["is_error"], true);
+    }
+
+    #[test]
+    fn record_operation_stores_and_increments_counter() {
+        let mut mem = Memory::new();
+        mem.record_operation(make_call("shell.exec"), &make_result(true), None);
+        assert_eq!(mem.operations.len(), 1);
+        assert_eq!(mem.ops_since_refresh, 1);
+    }
+
+    #[test]
+    fn last_undoable_returns_none_when_no_rollback() {
+        let mut mem = Memory::new();
+        mem.record_operation(make_call("shell.exec"), &make_result(true), None);
+        assert!(mem.last_undoable().is_none());
+    }
+
+    #[test]
+    fn last_undoable_returns_most_recent_undoable_operation() {
+        let mut mem = Memory::new();
+        let rollback = RollbackPlan {
+            description: "undo install".to_string(),
+            commands: vec!["sudo apt remove pkg".to_string()],
+            has_side_effects: true,
+        };
+        mem.record_operation(make_call("system.info"), &make_result(true), None);
+        mem.record_operation(make_call("shell.exec"), &make_result(true), Some(rollback));
+        mem.record_operation(make_call("file.read"), &make_result(true), None);
+
+        let undoable = mem.last_undoable().unwrap();
+        assert_eq!(undoable.tool_call.tool, "shell.exec");
+    }
+
+    #[test]
+    fn save_as_playbook_captures_last_n_steps_in_order() {
+        let mut mem = Memory::new();
+        for tool in &["shell.exec", "file.read", "system.info"] {
+            mem.record_operation(make_call(tool), &make_result(true), None);
+        }
+        let pb = mem.save_as_playbook("my-pb", "test playbook", 2);
+        assert_eq!(pb.name, "my-pb");
+        assert_eq!(pb.steps.len(), 2);
+        assert_eq!(pb.steps[0].tool, "file.read");
+        assert_eq!(pb.steps[1].tool, "system.info");
+    }
+
+    #[test]
+    fn save_as_playbook_clamps_to_available_operations() {
+        let mut mem = Memory::new();
+        mem.record_operation(make_call("shell.exec"), &make_result(true), None);
+        let pb = mem.save_as_playbook("my-pb", "desc", 10);
+        assert_eq!(pb.steps.len(), 1);
+    }
+
+    #[test]
+    fn build_llm_messages_returns_current_messages() {
+        let mut mem = Memory::new();
+        mem.push_user_text("hello");
+        mem.push_assistant_text("hi");
+        let messages = mem.build_llm_messages();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn messages_trimmed_to_max_when_overflowing() {
+        let mut mem = Memory::new();
+        mem.max_messages = 4;
+        // Push user/assistant pairs (each pair = 2 messages = one complete turn)
+        for i in 0..6 {
+            mem.push_user_text(&format!("msg {}", i));
+            mem.push_assistant_text(&format!("reply {}", i));
+        }
+        assert!(mem.messages.len() <= mem.max_messages);
+    }
+
+    #[test]
+    fn push_user_message_with_no_images_is_text_content() {
+        let mut mem = Memory::new();
+        mem.push_user_message_with_images("hello", &[]);
+        assert_eq!(mem.messages[0]["content"], "hello");
+    }
+
+    #[test]
+    fn default_impl_is_same_as_new() {
+        let a = Memory::new();
+        let b = Memory::default();
+        assert_eq!(a.messages.len(), b.messages.len());
+        assert_eq!(a.max_messages, b.max_messages);
+    }
+}

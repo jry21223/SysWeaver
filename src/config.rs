@@ -415,6 +415,16 @@ impl LlmConfig {
         &self.api_key
     }
 
+    #[cfg(test)]
+    pub fn new_test(provider_kind: LlmProviderKind, base_url: &str, model: &str) -> Self {
+        Self {
+            provider_kind,
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            api_key: "test-key".to_string(),
+        }
+    }
+
     pub fn anthropic_endpoint(&self) -> String {
         format!("{}/v1/messages", self.base_url)
     }

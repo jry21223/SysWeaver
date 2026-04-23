@@ -30,7 +30,7 @@ use user_config::{delete_config, interactive_config, show_current_config};
 #[command(
     name = "jij",
     about = "jij — 自然语言操作系统管理代理",
-    version = "0.2.3",
+    version = "0.2.4",
     long_about = "
 用自然语言管理你的 Linux/macOS/Windows 系统。
 
