@@ -93,18 +93,34 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             }
 
             ChatLine::ToolResultLine { success, preview, duration_ms } => {
-                if *success {
+                let icon = if *success { "     ✅ " } else { "     ❌ " };
+                let icon_style = if *success { theme::style_success() } else { theme::style_error() };
+                let text_style = if *success {
+                    Style::default().fg(Color::White)
+                } else {
+                    theme::style_error()
+                };
+                let preview_lines: Vec<&str> = preview.lines().collect();
+                let last_idx = preview_lines.len().saturating_sub(1);
+                if preview_lines.is_empty() {
                     lines.push(Line::from(vec![
-                        Span::styled("     ✅ ", theme::style_success()),
-                        Span::styled(sanitize_output(preview), Style::default().fg(Color::White)),
-                        Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim()),
+                        Span::styled(icon, icon_style),
+                        Span::styled(format!("({}ms)", duration_ms), theme::style_dim()),
                     ]));
                 } else {
-                    lines.push(Line::from(vec![
-                        Span::styled("     ❌ ", theme::style_error()),
-                        Span::styled(sanitize_output(preview), theme::style_error()),
-                        Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim()),
-                    ]));
+                    for (i, pl) in preview_lines.iter().enumerate() {
+                        let prefix = if i == 0 { icon } else { "        " };
+                        let duration_span = if i == last_idx {
+                            Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim())
+                        } else {
+                            Span::raw("")
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, if i == 0 { icon_style } else { Style::default() }),
+                            Span::styled(sanitize_output(pl), text_style),
+                            duration_span,
+                        ]));
+                    }
                 }
             }
 
@@ -148,7 +164,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         let welcome = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  欢迎使用 Agent Unix！",
+                "  欢迎使用 jij！",
                 Style::default().fg(Color::Rgb(180, 180, 255)).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
@@ -167,6 +183,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     }
 
     // 计算每个 Line 折行后的实际视觉行数（Wrap 模式下一个 Line 可占多行）
+    // 加 2 的安全余量补偿 CJK/emoji 宽度在不同终端下的细微差异
     let visible_height = inner.height as usize;
     let inner_width = inner.width as usize;
 
@@ -176,7 +193,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         lines.iter().map(|line| {
             let w = line.width();
             if w == 0 { 1 } else { (w + inner_width - 1) / inner_width }
-        }).sum::<usize>().max(1)
+        }).sum::<usize>().saturating_add(2).max(1)
     };
 
     let bottom_scroll = total_visual_rows.saturating_sub(visible_height);
@@ -192,15 +209,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         state.scroll_offset.min(bottom_scroll)
     };
 
+    // u16 溢出保护：超大对话截断到 u16::MAX
+    let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
+
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
+        .scroll((scroll_u16, 0));
 
     f.render_widget(para, inner);
 
     // 右下角显示滚动位置（如果不在底部）
     if scroll + visible_height < total_visual_rows {
-        let hint = format!(" ↓{} ", total_visual_rows - scroll - visible_height);
+        let hint = format!(" ↓{} ", total_visual_rows.saturating_sub(scroll + visible_height));
         let hint_area = Rect {
             x: area.x + area.width.saturating_sub(hint.len() as u16 + 2),
             y: area.y + area.height - 1,

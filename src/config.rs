@@ -220,8 +220,10 @@ struct UserConfigFile {
 fn user_config_path() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".agent-unix").join("config.json")
+        .unwrap_or_else(|_| {
+            if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
+        });
+    PathBuf::from(home).join(".jij").join("config.json")
 }
 
 /// 从文件加载用户配置
@@ -283,9 +285,32 @@ pub fn validate_model(model_str: &str) -> Result<String> {
     Ok(model_str.to_string())
 }
 
+/// 从环境变量自动检测 provider 名称（优先级：AGENT_UNIX_LLM_PROVIDER > ANTHROPIC_API_KEY > OPENAI_API_KEY）
+pub fn detect_provider_from_env() -> Option<String> {
+    if let Ok(p) = std::env::var("AGENT_UNIX_LLM_PROVIDER") {
+        return Some(p);
+    }
+    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        return Some("anthropic".to_string());
+    }
+    // Check all preset env keys before falling back to generic OPENAI_API_KEY
+    for preset in get_provider_presets() {
+        if preset.name == "anthropic" { continue; }
+        for env_key in &preset.suggested_env_keys {
+            if std::env::var(env_key).is_ok() {
+                return Some(preset.name.clone());
+            }
+        }
+    }
+    if std::env::var("OPENAI_API_KEY").is_ok() {
+        return Some("openai".to_string());
+    }
+    None
+}
+
 impl LlmConfig {
     /// 从 CLI 参数、配置文件和环境变量加载配置
-    /// 优先级：CLI > 配置文件 > ENV > 预设默认
+    /// 优先级：CLI > 配置文件 > ENV > 自动检测 > 预设默认
     pub fn load(
         provider_cli: Option<&str>,
         model_cli: Option<&str>,
@@ -293,7 +318,7 @@ impl LlmConfig {
         api_key_cli: Option<&str>,
     ) -> Result<Self> {
         let user_config = load_user_config_file();
-        let env_provider = std::env::var("AGENT_UNIX_LLM_PROVIDER").ok();
+        let env_provider = detect_provider_from_env();
 
         let provider_str = provider_cli
             .or_else(|| user_config.as_ref().and_then(|c| c.provider_preset.as_deref()))
@@ -432,9 +457,21 @@ fn get_fallback_api_key(
 
     if provider_kind == LlmProviderKind::Anthropic {
         std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| anyhow!("请设置 ANTHROPIC_API_KEY 或运行 'agent-unix config --setup'"))
+            .map_err(|_| anyhow!(
+                "未找到 API Key。\n   \
+                 快速配置（任选其一）：\n   \
+                 • export ANTHROPIC_API_KEY=sk-ant-xxx   # 使用 Anthropic Claude\n   \
+                 • export OPENAI_API_KEY=sk-xxx          # 使用 OpenAI GPT\n   \
+                 • jij config --setup                    # 交互式配置向导"
+            ))
     } else {
         std::env::var("OPENAI_API_KEY")
-            .map_err(|_| anyhow!("请设置对应 provider 的 API Key，或运行 'agent-unix config --setup'"))
+            .map_err(|_| anyhow!(
+                "未找到 API Key。\n   \
+                 快速配置（任选其一）：\n   \
+                 • export ANTHROPIC_API_KEY=sk-ant-xxx   # 使用 Anthropic Claude\n   \
+                 • export OPENAI_API_KEY=sk-xxx          # 使用 OpenAI GPT\n   \
+                 • jij config --setup                    # 交互式配置向导"
+            ))
     }
 }

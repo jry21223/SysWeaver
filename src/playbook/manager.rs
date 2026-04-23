@@ -6,9 +6,9 @@ use std::path::PathBuf;
 /// Playbook 来源类型（优先级从高到低）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlaybookSource {
-    /// 项目级：`.agent-unix/playbooks/`
+    /// 项目级：`.jij/playbooks/`
     Project = 3,
-    /// 用户级：`~/.agent-unix/playbooks/`
+    /// 用户级：`~/.jij/playbooks/`
     User = 2,
     /// 内置：系统预定义模板
     Bundled = 1,
@@ -168,16 +168,103 @@ impl PlaybookManager {
                 created_at: Utc::now(),
                 run_count: 0,
             },
+            // 安全审计模板
+            Playbook {
+                name: "security-audit".to_string(),
+                description: "快速安全审计：检查开放端口、SUID 文件、最近登录记录".to_string(),
+                steps: vec![
+                    crate::types::tool::ToolCall {
+                        tool: "system.info".to_string(),
+                        args: json!({ "query": "network" }),
+                        reason: Some("检查监听端口和网络连接".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "system.info".to_string(),
+                        args: json!({ "query": "user" }),
+                        reason: Some("列出系统用户，检查异常账号".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "last -n 20 2>/dev/null | head -20 || echo '无登录记录'" }),
+                        reason: Some("查看最近 20 条登录记录".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "find /usr /bin /sbin -perm -4000 -type f 2>/dev/null | head -20 || echo '无 SUID 文件'" }),
+                        reason: Some("检查 SUID 可执行文件".to_string()),
+                        dry_run: false,
+                    },
+                ],
+                created_at: Utc::now(),
+                run_count: 0,
+            },
+            // 进程诊断模板
+            Playbook {
+                name: "process-diagnosis".to_string(),
+                description: "诊断系统资源占用：CPU/内存 Top 进程、僵尸进程".to_string(),
+                steps: vec![
+                    crate::types::tool::ToolCall {
+                        tool: "system.info".to_string(),
+                        args: json!({ "query": "process" }),
+                        reason: Some("列出 CPU 占用最高的进程".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "ps aux --sort=-%mem 2>/dev/null | head -10 || ps aux | sort -k4rn | head -10" }),
+                        reason: Some("列出内存占用最高的进程".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "ps aux | awk '$8~/Z/{print $0}' || echo '无僵尸进程'" }),
+                        reason: Some("检查僵尸进程".to_string()),
+                        dry_run: false,
+                    },
+                ],
+                created_at: Utc::now(),
+                run_count: 0,
+            },
+            // 磁盘空间分析模板
+            Playbook {
+                name: "disk-space-analysis".to_string(),
+                description: "分析磁盘空间：找出占用大的目录和文件".to_string(),
+                steps: vec![
+                    crate::types::tool::ToolCall {
+                        tool: "system.info".to_string(),
+                        args: json!({ "query": "disk" }),
+                        reason: Some("查看整体磁盘使用".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "du -sh /* 2>/dev/null | sort -rh | head -10" }),
+                        reason: Some("找出根目录下最大的目录".to_string()),
+                        dry_run: false,
+                    },
+                    crate::types::tool::ToolCall {
+                        tool: "shell.exec".to_string(),
+                        args: json!({ "command": "find / -maxdepth 4 -type f -size +100M 2>/dev/null | head -15 | xargs ls -lh 2>/dev/null || echo '无大文件'" }),
+                        reason: Some("查找 100MB 以上的大文件".to_string()),
+                        dry_run: false,
+                    },
+                ],
+                created_at: Utc::now(),
+                run_count: 0,
+            },
         ]
     }
 
-    /// 加载用户级 Playbook（`~/.agent-unix/playbooks/`）
+    /// 加载用户级 Playbook（`~/.jij/playbooks/`）
     fn load_user_playbooks(&mut self) -> Result<()> {
         let user_home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| "/tmp".to_string());
 
-        let user_path = PathBuf::from(user_home).join(".agent-unix").join("playbooks");
+        let user_path = PathBuf::from(user_home).join(".jij").join("playbooks");
         self.source_paths.insert(PlaybookSource::User, user_path.clone());
 
         self.load_from_directory(&user_path, PlaybookSource::User)?;
@@ -185,9 +272,9 @@ impl PlaybookManager {
         Ok(())
     }
 
-    /// 加载项目级 Playbook（`.agent-unix/playbooks/`）
+    /// 加载项目级 Playbook（`.jij/playbooks/`）
     fn load_project_playbooks(&mut self, project_dir: &PathBuf) -> Result<()> {
-        let project_path = project_dir.join(".agent-unix").join("playbooks");
+        let project_path = project_dir.join(".jij").join("playbooks");
         self.source_paths.insert(PlaybookSource::Project, project_path.clone());
 
         self.load_from_directory(&project_path, PlaybookSource::Project)?;
@@ -284,7 +371,7 @@ impl PlaybookManager {
             .unwrap_or_else(|| {
                 // 默认保存到用户级
                 let user_home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(user_home).join(".agent-unix").join("playbooks")
+                PathBuf::from(user_home).join(".jij").join("playbooks")
             });
 
         // 创建目录（如果不存在）

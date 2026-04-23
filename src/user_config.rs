@@ -49,8 +49,10 @@ impl std::fmt::Display for ProviderOption {
 pub fn config_file_path() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".agent-unix").join("config.json")
+        .unwrap_or_else(|_| {
+            if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
+        });
+    PathBuf::from(home).join(".jij").join("config.json")
 }
 
 /// 加载用户配置
@@ -168,7 +170,7 @@ fn prompt_api_key(selected: &ProviderPreset) -> Result<Option<String>> {
 pub fn interactive_config(initial_provider: Option<&str>) -> Result<UserConfig> {
     println!();
     println!("══════════════════════════════════════════════════════");
-    println!("  Agent Unix 配置向导");
+    println!("  jij 配置向导");
     println!("══════════════════════════════════════════════════════");
     println!();
 
@@ -245,7 +247,7 @@ pub fn interactive_config(initial_provider: Option<&str>) -> Result<UserConfig> 
         }
 
         println!("🎉 现可以开始对话：");
-        println!("   agent-unix chat");
+        println!("   jij chat");
         println!();
 
         Ok(config)
@@ -303,7 +305,7 @@ pub fn show_current_config() {
         println!("⚠️  配置文件不存在");
         println!();
         println!("💡 创建配置：");
-        println!("   agent-unix config --setup");
+        println!("   jij config --setup");
     }
 }
 

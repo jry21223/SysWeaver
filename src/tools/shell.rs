@@ -57,7 +57,8 @@ impl Tool for ShellTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("缺少 command 参数"))?;
-        let working_dir = args["working_dir"].as_str().unwrap_or("/");
+        let working_dir = args["working_dir"].as_str()
+            .unwrap_or(if cfg!(windows) { "C:\\" } else { "/" });
         let timeout_secs = args["timeout_secs"]
             .as_u64()
             .unwrap_or(self.default_timeout_secs);
@@ -72,11 +73,11 @@ impl Tool for ShellTool {
         let start = Instant::now();
         let result = timeout(
             Duration::from_secs(timeout_secs),
-            Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(working_dir)
-                .output(),
+            if cfg!(windows) {
+                Command::new("cmd").args(["/C", command]).current_dir(working_dir).output()
+            } else {
+                Command::new("sh").args(["-c", command]).current_dir(working_dir).output()
+            },
         )
         .await;
 

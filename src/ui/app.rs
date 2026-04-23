@@ -19,11 +19,13 @@ use crate::agent::memory::SystemContext;
 use crate::agent::r#loop::AgentLoop;
 use crate::config::LlmConfig;
 use crate::context::system_scan;
+use crate::executor::ssh::SshConfig;
 use crate::ui::{
     AgentEvent,
     renderer,
     state::{AppState, ChatLine},
 };
+use crate::voice::VoiceEngine;
 use crate::watchdog::{AlertSeverity, create_watchdog_system};
 
 /// TUI 入口：初始化终端 → 启动 agent task → 运行事件循环
@@ -31,6 +33,7 @@ pub async fn run_tui(
     llm_config: LlmConfig,
     mode: String,
     ctx: SystemContext,
+    ssh_config: Option<SshConfig>,
 ) -> Result<()> {
     // ── 终端初始化 ────────────────────────────────────────────────────────
     enable_raw_mode()?;
@@ -62,14 +65,21 @@ pub async fn run_tui(
     state.system_ctx = Some(ctx.clone());
 
     // 启动欢迎消息（展示系统环境感知能力）
+    let ssh_label = if let Some(ref ssh) = ssh_config {
+        format!("\n  🔗 SSH 远程：{}", ssh.display())
+    } else {
+        "  💻 本地模式".to_string()
+    };
     let welcome = format!(
-        "🤖 Agent Unix v0.1.0 已就绪\n\n【系统环境】\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  包管理器：{}\n\n【可用命令】\n  /help    显示帮助\n  /status  系统状态速览\n  /history 操作历史\n  /undo    撤销上一步\n  /exit    退出\n\n请用自然语言描述您的需求，例如：「查看磁盘使用情况」",
+        "🤖 jij v0.2.0 已就绪\n\n【系统环境】\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  网络：{}\n  包管理器：{}\n{}\n\n【可用命令】\n  /help         显示帮助\n  /status       系统状态速览\n  /export       导出对话到文件（可复制）\n  /history      操作历史\n  /undo         撤销上一步\n  /voice tts    开启语音朗读\n  /exit         退出\n\n【快捷键】  Ctrl+Y 复制最后一条回复\n\n请用自然语言描述您的需求，例如：「查看磁盘使用情况」",
         ctx.os_info,
         ctx.hostname,
         ctx.cpu_info,
         ctx.memory_info,
         ctx.disk_info,
+        ctx.network_info,
         ctx.package_manager,
+        ssh_label,
     );
     state.push_line(ChatLine::AgentMsg(welcome));
     state.push_line(ChatLine::Separator);
@@ -80,13 +90,29 @@ pub async fn run_tui(
     let agent_mode = mode.clone();
     let agent_ctx = ctx.clone();
 
+    let agent_ssh = ssh_config;
     tokio::spawn(async move {
-        let mut agent = AgentLoop::new_with_tui(
-            agent_llm,
-            &agent_mode,
-            agent_ctx,
-            agent_event_tx.clone(),
-        );
+        // 保留副本，供 /clear 命令重建 agent
+        let saved_llm = agent_llm.clone();
+        let saved_mode = agent_mode.clone();
+        let saved_ssh = agent_ssh.clone();
+
+        let mut agent = match agent_ssh {
+            Some(ssh) => AgentLoop::new_with_tui_and_ssh(
+                agent_llm,
+                &agent_mode,
+                agent_ctx,
+                agent_event_tx.clone(),
+                ssh,
+            ),
+            None => AgentLoop::new_with_tui(
+                agent_llm,
+                &agent_mode,
+                agent_ctx,
+                agent_event_tx.clone(),
+            ),
+        };
+        let mut voice = VoiceEngine::new();
 
         loop {
             let input = match input_rx.recv().await {
@@ -96,17 +122,50 @@ pub async fn run_tui(
 
             // 斜线命令
             match input.trim() {
+                "/voice" | "/voice status" => {
+                    let status = voice.status_summary();
+                    let _ = agent_event_tx.send(AgentEvent::AgentReply(status)).await;
+                    continue;
+                }
+                "/voice tts" => {
+                    voice.tts_enabled = !voice.tts_enabled;
+                    let msg = if voice.tts_enabled {
+                        "🔊 语音朗读已开启（Agent 回复将被朗读）\n   关闭：/voice tts".to_string()
+                    } else {
+                        "🔇 语音朗读已关闭\n   开启：/voice tts".to_string()
+                    };
+                    let _ = agent_event_tx.send(AgentEvent::VoiceTtsToggle(voice.tts_enabled)).await;
+                    let _ = agent_event_tx.send(AgentEvent::AgentReply(msg)).await;
+                    continue;
+                }
+                "/voice off" => {
+                    voice.tts_enabled = false;
+                    voice.stt_enabled = false;
+                    let _ = agent_event_tx.send(AgentEvent::VoiceTtsToggle(false)).await;
+                    let _ = agent_event_tx.send(AgentEvent::AgentReply("🔇 所有语音功能已关闭".to_string())).await;
+                    continue;
+                }
                 "/help" => {
-                    let help = "📖 Agent Unix 帮助\n\n\
+                    let help = "📖 jij 帮助\n\n\
                         【命令列表】\n\
-                        /help    显示此帮助\n\
-                        /status  查看当前系统状态\n\
-                        /history 查看操作历史\n\
-                        /undo    撤销上一步操作\n\
+                        /help           显示此帮助\n\
+                        /status         查看当前系统状态\n\
+                        /history        查看操作历史\n\
+                        /undo           撤销上一步操作\n\
+                        /clear          清除对话上下文，重新开始\n\
+                        /export         导出完整对话历史到文件（可复制）\n\
+                        /voice          语音功能状态\n\
+                        /voice tts      开启/关闭语音朗读\n\
+                        /voice off      关闭所有语音功能\n\
+                        /report         生成系统健康综合报告\n\
                         /playbook list          列出 Playbook\n\
                         /playbook save <名称>   保存最近操作为 Playbook\n\
                         /playbook run <名称>    执行 Playbook\n\
-                        /exit    退出\n\n\
+                        /exit           退出\n\n\
+                        【快捷键】\n\
+                        Ctrl+Y   复制最后一条 Agent 回复\n\
+                        Ctrl+P/N 浏览历史输入\n\
+                        PgUp/Dn  滚动对话区\n\n\
                         【示例指令】\n\
                         · 查看磁盘使用情况\n\
                         · 列出内存占用最高的 5 个进程\n\
@@ -123,8 +182,14 @@ pub async fn run_tui(
                 "/status" => {
                     let _ = agent_event_tx.send(AgentEvent::Thinking).await;
                     let new_ctx = crate::context::system_scan::scan().await;
+                    let anomalies = crate::context::system_scan::detect_anomalies(&new_ctx);
+                    let anomaly_section = if anomalies.is_empty() {
+                        "  ✅ 系统运行正常，未检测到异常".to_string()
+                    } else {
+                        format!("\n⚠️  检测到异常：\n{}", anomalies.iter().map(|a| format!("  {}", a)).collect::<Vec<_>>().join("\n"))
+                    };
                     let status = format!(
-                        "📊 系统状态速览\n\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  包管理器：{}\n  活跃服务：{}",
+                        "📊 系统状态速览\n\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  包管理器：{}\n  活跃服务：{}\n{}",
                         new_ctx.os_info,
                         new_ctx.hostname,
                         new_ctx.cpu_info,
@@ -135,7 +200,8 @@ pub async fn run_tui(
                             "（无）".to_string()
                         } else {
                             new_ctx.running_services.join(", ")
-                        }
+                        },
+                        anomaly_section,
                     );
                     let _ = agent_event_tx.send(AgentEvent::SystemUpdate(new_ctx)).await;
                     let _ = agent_event_tx.send(AgentEvent::AgentReply(status)).await;
@@ -156,6 +222,58 @@ pub async fn run_tui(
                     let _ = agent_event_tx.send(AgentEvent::AgentReply(msg)).await;
                     continue;
                 }
+                "/report" => {
+                    let _ = agent_event_tx.send(AgentEvent::Thinking).await;
+                    let ctx = crate::context::system_scan::scan().await;
+                    let anomalies = crate::context::system_scan::detect_anomalies(&ctx);
+                    let anomaly_section = if anomalies.is_empty() {
+                        "  ✅ 未检测到系统异常".to_string()
+                    } else {
+                        format!("⚠️  告警：\n{}", anomalies.iter().map(|a| format!("  {}", a)).collect::<Vec<_>>().join("\n"))
+                    };
+                    let report = format!(
+                        "📋 系统健康综合报告\n\
+                        ──────────────────────────────────\n\
+                        基础信息\n\
+                          主机名：{}\n  操作系统：{}\n  包管理器：{}\n\
+                        ──────────────────────────────────\n\
+                        资源使用\n\
+                          CPU：{}\n  内存：{}\n  磁盘：{}\n\
+                        ──────────────────────────────────\n\
+                        网络与服务\n\
+                          网络：{}\n  活跃服务：{}\n\
+                        ──────────────────────────────────\n\
+                        异常检测\n  {}",
+                        ctx.hostname, ctx.os_info, ctx.package_manager,
+                        ctx.cpu_info, ctx.memory_info, ctx.disk_info,
+                        ctx.network_info,
+                        if ctx.running_services.is_empty() { "（无）".to_string() } else { ctx.running_services.join(", ") },
+                        anomaly_section,
+                    );
+                    let _ = agent_event_tx.send(AgentEvent::SystemUpdate(ctx)).await;
+                    let _ = agent_event_tx.send(AgentEvent::AgentReply(report)).await;
+                    continue;
+                }
+                "/clear" => {
+                    let new_ctx = crate::context::system_scan::scan().await;
+                    agent = match saved_ssh.as_ref() {
+                        Some(ssh) => AgentLoop::new_with_tui_and_ssh(
+                            saved_llm.clone(),
+                            &saved_mode,
+                            new_ctx,
+                            agent_event_tx.clone(),
+                            ssh.clone(),
+                        ),
+                        None => AgentLoop::new_with_tui(
+                            saved_llm.clone(),
+                            &saved_mode,
+                            new_ctx,
+                            agent_event_tx.clone(),
+                        ),
+                    };
+                    let _ = agent_event_tx.send(AgentEvent::AgentReply("🗑️ 对话上下文已清除，重新开始".to_string())).await;
+                    continue;
+                }
                 _ => {}
             }
 
@@ -163,6 +281,15 @@ pub async fn run_tui(
             let _ = agent_event_tx.send(AgentEvent::Thinking).await;
             match agent.run(&input, false).await {
                 Ok(reply) => {
+                    // TTS 朗读（不阻塞主循环）
+                    if voice.tts_enabled {
+                        let tts_text = reply.clone();
+                        let mut tts_engine = VoiceEngine::new();
+                        tts_engine.tts_enabled = true;
+                        tokio::spawn(async move {
+                            let _ = tts_engine.speak(&tts_text).await;
+                        });
+                    }
                     let _ = agent_event_tx.send(AgentEvent::AgentReply(reply)).await;
                     // 刷新系统状态
                     let new_ctx = system_scan::scan().await;
@@ -209,10 +336,13 @@ pub async fn run_tui(
                 }
             }
 
-            // Spinner 动画
+            // Spinner 动画 + 复制通知倒计时
             _ = spinner_tick.tick() => {
                 if state.is_thinking {
                     state.tick_spinner();
+                }
+                if state.copy_notice_frames > 0 {
+                    state.tick_copy_notice();
                 }
             }
 
@@ -327,6 +457,13 @@ async fn handle_event(
                     }
                 }
 
+                // Ctrl+Y：复制最后一条 Agent 回复到剪贴板
+                (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
+                    if state.copy_last_reply_to_clipboard() {
+                        state.copy_notice_frames = 40; // ~2.6s at 60fps
+                    }
+                }
+
                 // 发送输入
                 (KeyModifiers::NONE, KeyCode::Enter) => {
                     if state.is_thinking {
@@ -338,6 +475,16 @@ async fn handle_event(
                     }
                     if text.trim() == "/exit" {
                         return EventResult::Quit;
+                    }
+                    // /export：导出对话历史到文件（直接在 TUI 层处理，无需 agent）
+                    if text.trim() == "/export" {
+                        let result = state.export_to_file();
+                        let msg = match result {
+                            Ok(path) => format!("📄 对话已导出到：{}\n   可在文件管理器中打开并复制文本", path),
+                            Err(e) => format!("❌ 导出失败：{}", e),
+                        };
+                        state.push_line(ChatLine::AgentMsg(msg));
+                        return EventResult::Continue;
                     }
                     // 显示用户消息
                     state.push_line(ChatLine::UserMsg(text.clone()));
@@ -444,6 +591,10 @@ fn handle_agent_event(state: &mut AppState, event: AgentEvent) {
         AgentEvent::StepProgress { step, task_hint } => {
             state.task_step = step;
             state.task_hint = task_hint;
+        }
+
+        AgentEvent::VoiceTtsToggle(enabled) => {
+            state.voice_tts_enabled = enabled;
         }
     }
 }

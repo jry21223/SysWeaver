@@ -11,6 +11,7 @@ mod tools;
 mod types;
 mod ui;
 mod user_config;
+mod voice;
 mod watchdog;
 
 use anyhow::{Result, anyhow};
@@ -20,23 +21,27 @@ use tracing::info;
 use agent::planner::{DisambiguationOption, Planner, TaskPlan};
 use agent::r#loop::AgentLoop;
 use config::{LlmConfig, get_provider_presets};
+use executor::ssh::SshConfig;
 use playbook::{PlaybookManager, PlaybookSource};
 use safety::audit::should_persist_input;
 use user_config::{delete_config, interactive_config, show_current_config};
 
 #[derive(Parser)]
 #[command(
-    name = "agent-unix",
-    about = "Agent Unix — 自然语言操作系统管理代理",
-    version = "0.1.0",
+    name = "jij",
+    about = "jij — 自然语言操作系统管理代理",
+    version = "0.2.0",
     long_about = "
-用自然语言管理你的 Linux/macOS 系统。
+用自然语言管理你的 Linux/macOS/Windows 系统。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-快速开始：
-  agent-unix chat                  # 交互式对话（推荐）
-  agent-unix run \"查看磁盘\"         # 单条指令
-  agent-unix config --setup     # 交互式配置
+快速开始（无需配置，直接设置环境变量）：
+  export ANTHROPIC_API_KEY=sk-ant-xxx   # Anthropic Claude
+  export OPENAI_API_KEY=sk-xxx          # OpenAI GPT
+
+  jij chat                  # 交互式对话（推荐）
+  jij run \"查看磁盘\"         # 单条指令
+  jij config --setup        # 交互式配置（可选）
 
 支持多种 LLM Provider：
   --provider anthropic    # Claude（原生 tool_use）
@@ -45,10 +50,10 @@ use user_config::{delete_config, interactive_config, show_current_config};
   --provider groq         # 超快推理
   --provider deepseek     # DeepSeek
 
-环境变量：
-  AGENT_UNIX_LLM_API_KEY     # 通用 API Key（优先）
-  ANTHROPIC_API_KEY          # Anthropic 官方
-  OPENAI_API_KEY             # OpenAI 官方
+环境变量（无需 config 文件，直接设置即可使用）：
+  ANTHROPIC_API_KEY          # Anthropic 官方（自动检测）
+  OPENAI_API_KEY             # OpenAI 官方（自动检测）
+  AGENT_UNIX_LLM_API_KEY     # 通用 API Key（最高优先级）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 "
 )]
@@ -83,6 +88,15 @@ struct Cli {
     /// 禁用 TUI，使用传统 CLI 模式（用于无交互终端场景）
     #[arg(long, global = true)]
     no_tui: bool,
+
+    /// SSH 远程模式：连接到远程服务器（格式: user@host 或 user@host:port）
+    /// 示例: --ssh root@192.168.1.100 或 --ssh admin@server.example.com:2222
+    #[arg(long, global = true)]
+    ssh: Option<String>,
+
+    /// SSH 身份文件路径（与 --ssh 一起使用）
+    #[arg(long, global = true)]
+    ssh_key: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -184,7 +198,7 @@ enum PlaybookCommand<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ChatInputAction {
     Skip,
-    Execute { actual_input: String },
+    Execute { actual_input: String, plan_steps: Vec<String> },
     Clarify { options: Vec<DisambiguationOption> },
 }
 
@@ -198,7 +212,7 @@ async fn main() -> Result<()> {
         .with_env_filter(format!("agent_unix={}", log_level))
         .init();
 
-    info!("Agent Unix 启动，模式: {}", cli.mode);
+    info!("jij 启动，模式: {}", cli.mode);
 
     match cli.command {
         // ═══════════════════════════════════════════════════════
@@ -233,9 +247,9 @@ async fn main() -> Result<()> {
                 }
 
                 println!("💡 配置方式：");
-                println!("   agent-unix config --setup                # 交互式配置向导（推荐）");
-                println!("   agent-unix config --setup --provider glm # 预选 provider");
-                println!("   agent-unix config --show                 # 查看当前配置");
+                println!("   jij config --setup                # 交互式配置向导（推荐）");
+                println!("   jij config --setup --provider glm # 预选 provider");
+                println!("   jij config --show                 # 查看当前配置");
                 return Ok(());
             }
 
@@ -251,11 +265,11 @@ async fn main() -> Result<()> {
 
             println!("💡 Config 命令用法：");
             println!();
-            println!("   agent-unix config --setup                # 启动交互式配置向导（推荐）");
-            println!("   agent-unix config --setup --provider glm # 预选 provider");
-            println!("   agent-unix config --show                 # 显示当前配置");
-            println!("   agent-unix config --list                 # 列出支持的 Provider");
-            println!("   agent-unix config --delete               # 删除配置文件");
+            println!("   jij config --setup                # 启动交互式配置向导（推荐）");
+            println!("   jij config --setup --provider glm # 预选 provider");
+            println!("   jij config --show                 # 显示当前配置");
+            println!("   jij config --list                 # 列出支持的 Provider");
+            println!("   jij config --delete               # 删除配置文件");
         }
 
         Commands::Playbooks => {
@@ -281,8 +295,8 @@ async fn main() -> Result<()> {
                 println!("   • {}", desc);
             }
             println!();
-            println!("💡 使用方式：agent-unix explain <文件路径>");
-            println!("   示例：agent-unix explain /etc/nginx/nginx.conf");
+            println!("💡 使用方式：jij explain <文件路径>");
+            println!("   示例：jij explain /etc/nginx/nginx.conf");
         }
 
         Commands::Watch { duration } => {
@@ -313,7 +327,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Info => {
-            println!("🤖 Agent Unix v0.1.0");
+            println!("🤖 jij v0.2.0");
             println!("   AI Hackathon 2026 · 超聚变 αFUSION 预赛");
             println!();
             println!("⏳ 正在采集系统信息…");
@@ -331,16 +345,23 @@ async fn main() -> Result<()> {
             }
             println!();
             println!("【快速开始】");
-            println!("   agent-unix chat              # 交互式 TUI 对话");
-            println!("   agent-unix chat --no-tui     # CLI 对话模式");
-            println!("   agent-unix run \"查看磁盘\"    # 单条指令");
-            println!("   agent-unix config --setup    # 配置 LLM Provider");
+            println!("   jij chat              # 交互式 TUI 对话");
+            println!("   jij chat --no-tui     # CLI 对话模式");
+            println!("   jij run \"查看磁盘\"    # 单条指令");
+            println!("   jij config --setup    # 配置 LLM Provider");
         }
 
         // ═══════════════════════════════════════════════════════
         // 需要 LLM 的命令
         // ═══════════════════════════════════════════════════════
         _ => {
+            // 启动提示：显示自动检测到的 provider
+            if cli.provider.is_none() {
+                if let Some(detected) = config::detect_provider_from_env() {
+                    eprintln!("✅ 自动检测到 {} 配置，无需额外设置", detected);
+                }
+            }
+
             let llm_config = LlmConfig::load(
                 cli.provider.as_deref(),
                 cli.model.as_deref(),
@@ -352,11 +373,6 @@ async fn main() -> Result<()> {
                 eprintln!();
                 eprintln!("   {}", e);
                 eprintln!();
-                eprintln!("💡 快速配置：");
-                eprintln!("   1. agent-unix config --setup");
-                eprintln!("   2. export ANTHROPIC_API_KEY=sk-ant-xxx");
-                eprintln!("   3. agent-unix chat");
-                eprintln!();
                 std::process::exit(1);
             });
 
@@ -366,30 +382,59 @@ async fn main() -> Result<()> {
                 llm_config.model
             );
 
+            // 构建 SSH 配置（如果指定）
+            let ssh_config = cli.ssh.as_ref().map(|target| {
+                let mut cfg = SshConfig::new(target);
+                if let Some(ref key) = cli.ssh_key {
+                    cfg.identity_file = Some(key.clone());
+                }
+                cfg
+            });
+
+            // 远程模式提示
+            if let Some(ref ssh) = ssh_config {
+                println!("🔗 SSH 远程模式：{}", ssh.display());
+                println!("⏳ 测试 SSH 连接…");
+                match ssh.test_connection().await {
+                    Ok(msg) => println!("{}", msg),
+                    Err(e) => {
+                        eprintln!("❌ SSH 连接失败: {}", e);
+                        eprintln!("💡 请检查：");
+                        eprintln!("   1. 目标服务器是否可达");
+                        eprintln!("   2. SSH Key 是否已配置（~/.ssh/id_rsa 或 --ssh-key 指定）");
+                        eprintln!("   3. 用户名是否正确（格式: user@host）");
+                        std::process::exit(1);
+                    }
+                }
+                println!();
+            }
+
             match cli.command {
                 Commands::Chat => {
                     let ctx = context::system_scan::scan().await;
 
                     if cli.no_tui {
                         // ── CLI fallback 模式 ─────────────────────────────
-                        println!("🤖 Agent Unix v0.1.0  [CLI 模式]");
+                        let mode_label = if ssh_config.is_some() { "SSH 远程模式" } else { "CLI 本地模式" };
+                        println!("🤖 jij v0.2.0  [{}]", mode_label);
                         println!("   Provider: {} @ {}", llm_config.provider_kind, llm_config.base_url);
                         println!();
                         println!("【系统环境】");
                         println!("   OS：{}  主机：{}", ctx.os_info, ctx.hostname);
                         println!("   CPU：{}  内存：{}", ctx.cpu_info, ctx.memory_info);
                         println!("   磁盘：{}  包管理器：{}", ctx.disk_info, ctx.package_manager);
+                        println!("   网络：{}", ctx.network_info);
                         println!();
                         println!("   输入 '/help' 查看命令，'/exit' 退出\n");
-                        run_chat_loop(&llm_config, &cli.mode, ctx).await?;
+                        run_chat_loop(&llm_config, &cli.mode, ctx, ssh_config).await?;
                     } else {
                         // ── TUI 模式（默认）──────────────────────────────
-                        ui::run_tui(llm_config, cli.mode.clone(), ctx).await?;
+                        ui::run_tui(llm_config, cli.mode.clone(), ctx, ssh_config).await?;
                     }
                 }
                 Commands::Run { instruction, dry_run } => {
                     let ctx = context::system_scan::scan().await;
-                    run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run).await?;
+                    run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run, ssh_config).await?;
                 }
                 Commands::Explain { file: Some(path) } => {
                     run_explain(&llm_config, &path).await?;
@@ -408,6 +453,7 @@ async fn run_chat_loop(
     llm_config: &LlmConfig,
     mode: &str,
     ctx: crate::agent::memory::SystemContext,
+    ssh_config: Option<SshConfig>,
 ) -> Result<()> {
     use rustyline::DefaultEditor;
     use rustyline::error::ReadlineError;
@@ -415,10 +461,12 @@ async fn run_chat_loop(
     use image::{ImageProcessor, Iterm2Detector};
 
     let mut rl = DefaultEditor::new()?;
-    let history_path = format!(
-        "{}/.agent-unix/history.txt",
-        std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
-    );
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
+        });
+    let history_path = format!("{}/.jij/history.txt", home);
     if let Some(parent) = std::path::Path::new(&history_path).parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             tracing::warn!("创建历史记录目录失败: {}", err);
@@ -430,7 +478,12 @@ async fn run_chat_loop(
         Err(err) => tracing::warn!("加载历史记录失败: {}", err),
     }
 
-    let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
+    // 保留副本，供 /clear 命令重建 agent
+    let saved_ssh = ssh_config.clone();
+    let mut agent = match ssh_config {
+        Some(ssh) => AgentLoop::new_with_ssh(llm_config.clone(), mode, ctx, ssh),
+        None => AgentLoop::new(llm_config.clone(), mode, ctx),
+    };
     let image_processor = ImageProcessor::new();
     let iterm2_detector = Iterm2Detector::new();
 
@@ -463,6 +516,14 @@ async fn run_chat_loop(
                     if !new_ctx.running_services.is_empty() {
                         println!("   活跃服务：{}", new_ctx.running_services.join(", "));
                     }
+                    // 主动异常检测
+                    let anomalies = context::system_scan::detect_anomalies(&new_ctx);
+                    if !anomalies.is_empty() {
+                        println!("\n⚠️  检测到以下异常：");
+                        for anomaly in &anomalies {
+                            println!("   {}", anomaly);
+                        }
+                    }
                     println!();
                     // 同步更新 agent 的系统上下文
                     agent.memory.refresh_system_context(new_ctx);
@@ -472,12 +533,25 @@ async fn run_chat_loop(
                     show_history_inline(&agent);
                     continue;
                 }
+                if input == "/clear" {
+                    let new_ctx = context::system_scan::scan().await;
+                    agent = match saved_ssh.as_ref() {
+                        Some(ssh) => AgentLoop::new_with_ssh(llm_config.clone(), mode, new_ctx, ssh.clone()),
+                        None => AgentLoop::new(llm_config.clone(), mode, new_ctx),
+                    };
+                    println!("\n🗑️  对话上下文已清除，重新开始\n");
+                    continue;
+                }
                 if input == "/undo" {
                     handle_undo_inline(&mut agent).await;
                     continue;
                 }
                 if input.starts_with("/playbook") {
                     handle_playbook_inline(&mut agent, input, llm_config).await?;
+                    continue;
+                }
+                if input == "/report" {
+                    handle_report_inline().await;
                     continue;
                 }
 
@@ -517,7 +591,15 @@ async fn run_chat_loop(
                         }
                         continue;
                     }
-                    Ok(ChatInputAction::Execute { actual_input }) => {
+                    Ok(ChatInputAction::Execute { actual_input, plan_steps }) => {
+                        // 显示多步执行计划
+                        if !plan_steps.is_empty() {
+                            println!("\n📋 执行计划（共 {} 步）：", plan_steps.len());
+                            for (i, step) in plan_steps.iter().enumerate() {
+                                println!("   {}. {}", i + 1, step);
+                            }
+                            println!();
+                        }
                         match agent.run_with_images(&actual_input, &images, false).await {
                             Ok(response) => println!("\n🤖 Agent：{}\n", response),
                             Err(e) => println!("\n❌ 错误: {}\n", e),
@@ -558,6 +640,7 @@ async fn run_single(
     ctx: crate::agent::memory::SystemContext,
     instruction: &str,
     dry_run: bool,
+    ssh_config: Option<SshConfig>,
 ) -> Result<()> {
     let planner = Planner::new(llm_config.clone());
     let planner_context = format_planner_context(&ctx);
@@ -577,7 +660,10 @@ async fn run_single(
             display_instruction,
             actual_instruction,
         } => {
-            let mut agent = AgentLoop::new(llm_config.clone(), mode, ctx);
+            let mut agent = match ssh_config {
+                Some(ssh) => AgentLoop::new_with_ssh(llm_config.clone(), mode, ctx, ssh),
+                None => AgentLoop::new(llm_config.clone(), mode, ctx),
+            };
 
             println!("🤖 执行: {}", display_instruction);
             if dry_run {
@@ -698,7 +784,7 @@ fn prompt_disambiguation(
 
 fn format_planner_context(ctx: &crate::agent::memory::SystemContext) -> String {
     format!(
-        "操作系统: {}\n主机名: {}\nCPU: {}\n内存: {}\n磁盘: {}\n活跃服务: {}\n包管理器: {}",
+        "操作系统: {}\n主机名: {}\nCPU: {}\n内存: {}\n磁盘: {}\n活跃服务: {}\n包管理器: {}\n网络: {}",
         ctx.os_info,
         ctx.hostname,
         ctx.cpu_info,
@@ -706,6 +792,7 @@ fn format_planner_context(ctx: &crate::agent::memory::SystemContext) -> String {
         ctx.disk_info,
         ctx.running_services.join(", "),
         ctx.package_manager,
+        ctx.network_info,
     )
 }
 
@@ -739,6 +826,7 @@ async fn prepare_chat_input_action(
     let Some(ctx) = system_context.as_ref() else {
         return Ok(ChatInputAction::Execute {
             actual_input: input.to_string(),
+            plan_steps: vec![],
         });
     };
 
@@ -746,9 +834,16 @@ async fn prepare_chat_input_action(
     let planner_context = format_planner_context(ctx);
     let plan = planner.analyze(input, &planner_context).await?;
 
+    // Extract plan steps before consuming the plan
+    let steps = match &plan {
+        TaskPlan::Multi { estimated_steps, .. } => estimated_steps.clone(),
+        _ => vec![],
+    };
+
     Ok(match prepare_run_instruction(input, plan) {
         PreparedRunInstruction::Execute { actual_instruction, .. } => ChatInputAction::Execute {
             actual_input: actual_instruction,
+            plan_steps: steps,
         },
         PreparedRunInstruction::Clarify { options } => ChatInputAction::Clarify { options },
     })
@@ -914,13 +1009,15 @@ fn is_valid_playbook_name(name: &str) -> bool {
 }
 
 fn print_help_message() {
-    println!("\n📖 Agent Unix 帮助");
+    println!("\n📖 jij 帮助");
     println!();
     println!("【命令列表】");
     println!("   /help    显示此帮助");
     println!("   /status  实时采集并显示系统状态");
     println!("   /history 查看操作历史");
     println!("   /undo    撤销上一步操作");
+    println!("   /clear   清除对话上下文，重新开始");
+    println!("   /report  生成系统健康综合报告");
     println!("   /playbook list          列出 Playbook");
     println!("   /playbook save <名称>   保存最近操作为 Playbook");
     println!("   /playbook run <名称>    执行 Playbook");
@@ -938,6 +1035,51 @@ fn print_help_message() {
     println!("   · 高风险操作（HIGH）需要您输入 yes 确认");
     println!("   · 可用 --mode safe 对中风险操作也要求确认");
     println!();
+}
+
+async fn handle_report_inline() {
+    use chrono::Local;
+    println!("\n⏳ 生成系统健康报告…");
+    let ctx = context::system_scan::scan().await;
+    let anomalies = context::system_scan::detect_anomalies(&ctx);
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+
+    println!("\n╔══════════════════════════════════════════════════════╗");
+    println!("║        系统健康综合报告  {}        ║", ts);
+    println!("╠══════════════════════════════════════════════════════╣");
+    println!("║  基础信息                                            ║");
+    println!("╟──────────────────────────────────────────────────────╢");
+    println!("  主机名：{}", ctx.hostname);
+    println!("  操作系统：{}", ctx.os_info);
+    println!("  包管理器：{}", ctx.package_manager);
+    println!("╟──────────────────────────────────────────────────────╢");
+    println!("║  资源使用                                            ║");
+    println!("╟──────────────────────────────────────────────────────╢");
+    println!("  CPU：{}", ctx.cpu_info);
+    println!("  内存：{}", ctx.memory_info);
+    println!("  磁盘：{}", ctx.disk_info);
+    println!("╟──────────────────────────────────────────────────────╢");
+    println!("║  网络与服务                                          ║");
+    println!("╟──────────────────────────────────────────────────────╢");
+    println!("  网络：{}", ctx.network_info);
+    if !ctx.running_services.is_empty() {
+        println!("  活跃服务：{}", ctx.running_services.join(", "));
+    } else {
+        println!("  活跃服务：（未检测到用户服务）");
+    }
+    println!("╟──────────────────────────────────────────────────────╢");
+    if anomalies.is_empty() {
+        println!("║  异常检测                                            ║");
+        println!("╟──────────────────────────────────────────────────────╢");
+        println!("  ✅ 未检测到系统异常，系统运行正常");
+    } else {
+        println!("║  ⚠️  异常告警                                        ║");
+        println!("╟──────────────────────────────────────────────────────╢");
+        for a in &anomalies {
+            println!("  {}", a);
+        }
+    }
+    println!("╚══════════════════════════════════════════════════════╝\n");
 }
 
 async fn show_history() {
@@ -1152,9 +1294,11 @@ mod tests {
         assert_eq!(
             ChatInputAction::Execute {
                 actual_input: "查看磁盘".to_string(),
+                plan_steps: vec![],
             },
             ChatInputAction::Execute {
                 actual_input: "查看磁盘".to_string(),
+                plan_steps: vec![],
             }
         );
     }

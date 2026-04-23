@@ -45,8 +45,11 @@ pub struct AuditLogger {
 impl AuditLogger {
     pub fn new(session_id: &str) -> Self {
         let log_path = format!(
-            "{}/.agent-unix/audit-{}.jsonl",
-            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+            "{}/.jij/audit-{}.jsonl",
+            std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| {
+                    if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
+                }),
             chrono::Local::now().format("%Y%m%d")
         );
 

@@ -24,16 +24,16 @@ impl LocalExecutor {
     }
 
     pub async fn run(&self, command: &str, working_dir: Option<&str>) -> Result<ExecResult> {
-        let dir = working_dir.unwrap_or("/");
+        let dir = working_dir.unwrap_or(if cfg!(windows) { "C:\\" } else { "/" });
         let start = Instant::now();
 
         let result = timeout(
             Duration::from_secs(self.timeout_secs),
-            Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(dir)
-                .output(),
+            if cfg!(windows) {
+                Command::new("cmd").args(["/C", command]).current_dir(dir).output()
+            } else {
+                Command::new("sh").args(["-c", command]).current_dir(dir).output()
+            },
         )
         .await;
 

@@ -37,6 +37,15 @@ pub struct AppState {
     // ── 任务步骤进度 ──────────────────────────────────────────────
     pub task_step: usize,
     pub task_hint: String,
+
+    // ── 最后一条 Agent 回复（供 Ctrl+Y 复制用）──────────────────
+    pub last_agent_reply: String,
+
+    // ── 复制通知倒计时（帧数）────────────────────────────────────
+    pub copy_notice_frames: u8,
+
+    // ── 语音 TTS 开关 ─────────────────────────────────────────────
+    pub voice_tts_enabled: bool,
 }
 
 /// 对话区一行的内容类型
@@ -102,13 +111,80 @@ impl AppState {
             history_idx: None,
             task_step: 0,
             task_hint: String::new(),
+            last_agent_reply: String::new(),
+            copy_notice_frames: 0,
+            voice_tts_enabled: false,
         }
     }
 
     /// 添加一行到对话区，并自动滚到底
     pub fn push_line(&mut self, line: ChatLine) {
+        if let ChatLine::AgentMsg(ref text) = line {
+            self.last_agent_reply = text.clone();
+        }
         self.messages.push(line);
         self.scroll_to_bottom();
+    }
+
+    /// 将最后一条 Agent 回复复制到系统剪贴板（macOS/Linux/Windows 兼容）
+    pub fn copy_last_reply_to_clipboard(&self) -> bool {
+        if self.last_agent_reply.is_empty() {
+            return false;
+        }
+        write_to_clipboard(&self.last_agent_reply)
+    }
+
+    /// 将完整对话历史导出为纯文本字符串（用于保存文件）
+    pub fn export_chat_as_text(&self) -> String {
+        let mut out = String::new();
+        for msg in &self.messages {
+            match msg {
+                ChatLine::UserMsg(text) => {
+                    out.push_str("【你】\n");
+                    out.push_str(text);
+                    out.push_str("\n\n");
+                }
+                ChatLine::AgentMsg(text) => {
+                    out.push_str("【Agent】\n");
+                    out.push_str(text);
+                    out.push_str("\n\n");
+                }
+                ChatLine::ToolCallLine { step, tool, args, .. } => {
+                    out.push_str(&format!("[Step {}] 工具: {}  参数: {}\n", step, tool, args));
+                }
+                ChatLine::ToolResultLine { success, preview, duration_ms } => {
+                    let status = if *success { "✓" } else { "✗" };
+                    out.push_str(&format!("{} {}ms\n{}\n", status, duration_ms, preview));
+                }
+                ChatLine::ErrorLine(msg) => {
+                    out.push_str(&format!("[错误] {}\n\n", msg));
+                }
+                ChatLine::Separator => {
+                    out.push_str("────────────────────────\n");
+                }
+                ChatLine::WatchdogAlert { severity, message } => {
+                    out.push_str(&format!("[告警 {}] {}\n\n", severity, message));
+                }
+            }
+        }
+        out
+    }
+
+    /// 将完整对话导出到文件，返回保存路径
+    pub fn export_to_file(&self) -> Result<String, String> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let path = format!("{}/jij_chat_{}.txt", home, timestamp);
+        let content = self.export_chat_as_text();
+        std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
+    /// 递减复制通知倒计时（每帧调用）
+    pub fn tick_copy_notice(&mut self) {
+        self.copy_notice_frames = self.copy_notice_frames.saturating_sub(1);
     }
 
     /// 滚动到对话区底部
@@ -267,5 +343,72 @@ impl AppState {
     pub fn spinner_char(&self) -> &str {
         const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         FRAMES[self.spinner_frame % FRAMES.len()]
+    }
+}
+
+/// 跨平台剪贴板写入（macOS: pbcopy，Linux: xclip/xsel，Windows: clip.exe）
+fn write_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            })
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            })
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Linux: try xclip then xsel
+        let ok = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            })
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return true;
+        }
+        std::process::Command::new("xsel")
+            .args(["--clipboard", "--input"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            })
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }

@@ -5,7 +5,11 @@ use tokio::process::Command;
 /// 启动时扫描系统环境，构建 SystemContext
 pub async fn scan() -> SystemContext {
     let run = |cmd: &'static str| async move {
-        let out = Command::new("sh").arg("-c").arg(cmd).output().await;
+        let out = if cfg!(windows) {
+            Command::new("cmd").args(["/C", cmd]).output().await
+        } else {
+            Command::new("sh").arg("-c").arg(cmd).output().await
+        };
         match out {
             Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             Err(_) => "未知".to_string(),
@@ -14,6 +18,8 @@ pub async fn scan() -> SystemContext {
 
     let os_info = if cfg!(target_os = "macos") {
         run("sw_vers | awk '/ProductName/{n=$2}/ProductVersion/{v=$2}END{print n\" \"v}'").await
+    } else if cfg!(windows) {
+        run("ver").await
     } else {
         run("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -s").await
     };
@@ -22,6 +28,8 @@ pub async fn scan() -> SystemContext {
 
     let cpu_info = if cfg!(target_os = "macos") {
         run("cores=$(sysctl -n hw.logicalcpu); model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model); echo \"${cores} cores, ${model}\"").await
+    } else if cfg!(windows) {
+        run("wmic cpu get Name,NumberOfLogicalProcessors /format:value").await
     } else {
         run("cores=$(nproc); model=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs); echo \"${cores} cores, ${model:-unknown}\"").await
     };
@@ -36,6 +44,22 @@ pub async fn scan() -> SystemContext {
             "/Pages occupied by compressor/{gsub(/\\./, \"\", $5); c=$5+0}",
             "END{printf \"%.1fG total, %.1fG used\", total/1073741824, (a+w+c)*page/1073741824}'"
         )).await
+    } else if cfg!(windows) {
+        {
+            let raw = run("wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value 2>NUL").await;
+            let mut total_kb = 0u64;
+            let mut free_kb = 0u64;
+            for l in raw.lines() {
+                if let Some(v) = l.strip_prefix("TotalVisibleMemorySize=") {
+                    total_kb = v.trim().parse().unwrap_or(0);
+                } else if let Some(v) = l.strip_prefix("FreePhysicalMemory=") {
+                    free_kb = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let total_gb = total_kb as f64 / 1_048_576.0;
+            let used_gb = total_kb.saturating_sub(free_kb) as f64 / 1_048_576.0;
+            format!("{:.1}G total, {:.1}G used", total_gb, used_gb)
+        }
     } else {
         run("free -h | grep Mem | awk '{print $2\" total, \"$3\" used\"}'").await
     };
@@ -54,6 +78,23 @@ pub async fn scan() -> SystemContext {
              }'",
         )
         .await
+    } else if cfg!(windows) {
+        {
+            let raw = run("wmic logicaldisk where DeviceID='C:' get Size,FreeSpace /value 2>NUL").await;
+            let mut size = 0u64;
+            let mut free = 0u64;
+            for l in raw.lines() {
+                if let Some(v) = l.strip_prefix("Size=") {
+                    size = v.trim().parse().unwrap_or(0);
+                } else if let Some(v) = l.strip_prefix("FreeSpace=") {
+                    free = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let size_gb = size as f64 / 1_073_741_824.0;
+            let free_gb = free as f64 / 1_073_741_824.0;
+            let pct = if size > 0 { size.saturating_sub(free) as f64 / size as f64 * 100.0 } else { 0.0 };
+            format!("{:.0}G total, {:.1}G free, {:.0}% used", size_gb, free_gb, pct)
+        }
     } else {
         run("df -k / | tail -1 | awk '{printf \"%.0fG total, %.1fG free, %s used\", $2/976562.5, $4/976562.5, $5}'").await
     };
@@ -61,6 +102,14 @@ pub async fn scan() -> SystemContext {
     // 服务列表（macOS 过滤 Apple 内部服务，只保留可识别的第三方/系统服务）
     let services_raw = if cfg!(target_os = "macos") {
         run("launchctl list 2>/dev/null | awk 'NF>=3 && $1~/^[0-9]+$/{print $3}' | grep -vE '^(com\\.apple\\.|application\\.com\\.apple\\.)' | grep -vE '^application\\.' | head -10").await
+    } else if cfg!(windows) {
+        run("sc query state= running 2>NUL | findstr SERVICE_NAME").await
+            .lines()
+            .map(|l| l.trim_start_matches("SERVICE_NAME:").trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(10)
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         run("systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | sed 's/.service//' | head -10").await
     };
@@ -77,6 +126,16 @@ pub async fn scan() -> SystemContext {
         } else {
             "unknown".to_string()
         }
+    } else if cfg!(windows) {
+        if run("winget --version 2>NUL").await.contains('.') {
+            "winget".to_string()
+        } else if run("choco --version 2>NUL").await.contains('.') {
+            "choco".to_string()
+        } else if run("scoop --version 2>NUL").await.contains("scoop") {
+            "scoop".to_string()
+        } else {
+            "unknown".to_string()
+        }
     } else if run("which apt 2>/dev/null").await.contains("apt") {
         "apt".to_string()
     } else if run("which dnf 2>/dev/null").await.contains("dnf") {
@@ -87,6 +146,25 @@ pub async fn scan() -> SystemContext {
         "unknown".to_string()
     };
 
+    // 网络信息：本机 IP 及监听端口
+    let network_info = if cfg!(target_os = "macos") {
+        run("ips=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -3 | tr '\\n' ' '); ports=$(lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | awk 'NR>1{print $9}' | sed 's/.*://' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"").await
+    } else if cfg!(windows) {
+        {
+            let raw = run("ipconfig 2>NUL | findstr \"IPv4\"").await;
+            let ips: Vec<String> = raw
+                .lines()
+                .filter_map(|l| l.split(':').last().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty() && s != "127.0.0.1")
+                .take(3)
+                .collect();
+            let ip_str = if ips.is_empty() { "127.0.0.1".to_string() } else { ips.join(" ") };
+            format!("IP:{}", ip_str)
+        }
+    } else {
+        run("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); ports=$(ss -tlnp 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"").await
+    };
+
     SystemContext {
         os_info,
         hostname,
@@ -95,6 +173,71 @@ pub async fn scan() -> SystemContext {
         disk_info,
         running_services,
         package_manager,
+        network_info,
         collected_at: Utc::now(),
     }
+}
+
+/// 基于系统上下文做主动异常检测，返回告警消息列表
+pub fn detect_anomalies(ctx: &SystemContext) -> Vec<String> {
+    let mut alerts = Vec::new();
+
+    // 磁盘使用率检测
+    if let Some(pct) = extract_percent(&ctx.disk_info) {
+        if pct >= 90 {
+            alerts.push(format!("🔴 磁盘严重不足（{}% 已用），请立即清理", pct));
+        } else if pct >= 80 {
+            alerts.push(format!("🟡 磁盘空间紧张（{}% 已用），建议及时清理", pct));
+        }
+    }
+
+    // 内存使用率检测
+    if let Some(mem_pct) = extract_memory_percent(&ctx.memory_info) {
+        if mem_pct >= 90 {
+            alerts.push(format!("🔴 内存严重不足（{}% 已用），系统可能出现性能问题", mem_pct));
+        } else if mem_pct >= 80 {
+            alerts.push(format!("🟡 内存使用率偏高（{}%），建议排查占用进程", mem_pct));
+        }
+    }
+
+    alerts
+}
+
+/// 从磁盘信息字符串中提取使用百分比（如 "47% used" → 47）
+fn extract_percent(info: &str) -> Option<u64> {
+    let pct_pos = info.find('%')?;
+    let before = &info[..pct_pos];
+    let num_start = before.rfind(|c: char| !c.is_ascii_digit()).map(|p| p + 1).unwrap_or(0);
+    before[num_start..].parse::<u64>().ok()
+}
+
+/// 从内存信息字符串中估算使用百分比
+fn extract_memory_percent(info: &str) -> Option<u64> {
+    let lower = info.to_lowercase();
+    let total = extract_size_gb(&lower, "total")?;
+    let used = extract_size_gb(&lower, "used")?;
+    if total > 0.0 {
+        Some((used / total * 100.0) as u64)
+    } else {
+        None
+    }
+}
+
+/// 从形如 "4.2G used" 或 "4200M total" 的字符串中提取 GB 值
+fn extract_size_gb(info: &str, keyword: &str) -> Option<f64> {
+    let pos = info.find(keyword)?;
+    let before = info[..pos].trim_end();
+    let unit_pos = before.rfind(|c: char| matches!(c, 'g' | 'm' | 'k' | 't' | 'b'))?;
+    let unit = before.chars().nth(unit_pos)?;
+    let num_str = &before[..unit_pos].trim();
+    let num_start = num_str.rfind(|c: char| !c.is_ascii_digit() && c != '.').map(|p| p + 1).unwrap_or(0);
+    let val: f64 = num_str[num_start..].parse().ok()?;
+    let gb = match unit {
+        'g' => val,
+        'm' => val / 1024.0,
+        'k' => val / 1024.0 / 1024.0,
+        't' => val * 1024.0,
+        _ => val,
+    };
+    Some(gb)
 }

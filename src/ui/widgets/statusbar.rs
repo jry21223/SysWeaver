@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let mut spans = vec![
-        Span::styled(" 🤖 Agent Unix ", Style::default()
+        Span::styled(" 🤖 jij ", Style::default()
             .fg(Color::White)
             .bg(theme::CLR_STATUSBAR)
             .add_modifier(Modifier::BOLD)),
@@ -67,12 +67,36 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         ));
     }
 
+    // 语音 TTS 状态
+    if state.voice_tts_enabled {
+        spans.push(Span::styled(" │ ", theme::style_dim()));
+        spans.push(Span::styled(
+            " 🔊 TTS ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(80, 200, 120))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // 复制成功通知
+    if state.copy_notice_frames > 0 {
+        spans.push(Span::styled(" │ ", theme::style_dim()));
+        spans.push(Span::styled(
+            " ✓ 已复制 ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(100, 220, 100))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // 右侧快捷键提示
     let hints = vec![
         Span::styled(" /exit", theme::style_statusbar_key()),
         Span::styled(" 退出 ", theme::style_dim()),
-        Span::styled(" /undo", theme::style_statusbar_key()),
-        Span::styled(" 撤销 ", theme::style_dim()),
+        Span::styled(" Ctrl+Y", theme::style_statusbar_key()),
+        Span::styled(" 复制 ", theme::style_dim()),
         Span::styled(" PgUp/Dn", theme::style_statusbar_key()),
         Span::styled(" 滚动 ", theme::style_dim()),
     ];
