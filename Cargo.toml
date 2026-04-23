@@ -1,13 +1,13 @@
 [package]
-name = "agent-unix"
-version = "0.1.0"
+name = "jij"
+version = "0.2.0"
 edition = "2021"
 authors = ["Agent Unix Team"]
 description = "A natural language OS management agent powered by AI"
 license = "MIT"
 
 [[bin]]
-name = "agent-unix"
+name = "jij"
 path = "src/main.rs"
 
 [dependencies]
