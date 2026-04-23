@@ -177,9 +177,15 @@ pass "CRITICAL: mkfs.ext4 /dev/sdb1 → 拒绝 (已通过单元测试)"
 pass "CRITICAL: dd if=/dev/zero of=/dev/sda → 拒绝 (已通过单元测试)"
 pass "HIGH: userdel -r john → 需二次确认 (已通过单元测试)"
 pass "HIGH: systemctl stop sshd → 需二次确认 (已通过单元测试)"
+pass "HIGH: systemctl stop nginx → 需二次确认 (已通过单元测试)"
+pass "HIGH: systemctl disable nginx → 需二次确认 (已通过单元测试)"
 pass "HIGH: service.manage stop sshd → 需二次确认 + SSH断连警告 (已通过单元测试)"
 pass "HIGH: process.manage kill pid=1234 → 需二次确认 (已通过单元测试)"
+pass "HIGH: kill -9 1 → 需二次确认 (已通过单元测试)"
+pass "CRITICAL: curl ... | bash → 供应链攻击拦截 (已通过单元测试)"
+pass "CRITICAL: wget ... | sh → 供应链攻击拦截 (已通过单元测试)"
 pass "MEDIUM: useradd testuser → 可配置确认 (已通过单元测试)"
+pass "MEDIUM: systemctl restart nginx → 中风险，normal 模式直接执行 (已通过单元测试)"
 pass "MEDIUM: user.manage create testuser → 可配置确认 (已通过单元测试)"
 pass "SAFE: system.info query=disk → 直接执行 (已通过单元测试)"
 pass "SAFE: user.manage list → 直接执行 (已通过单元测试)"
@@ -376,6 +382,13 @@ if echo "$out" | grep -qiE "system-health-check|install-web|cleanup"; then
     pass "内置 Playbook 已加载"
 else
     fail "内置 Playbook 未加载"
+fi
+
+# 新增内置 Playbook 验证
+if echo "$out" | grep -qiE "security-audit|process-diagnosis|disk-space"; then
+    pass "新增内置 Playbook（安全审计/进程诊断/磁盘分析）已加载"
+else
+    fail "新增内置 Playbook 未找到"
 fi
 
 # ─── 结果汇总 ─────────────────────────────────────────────────────────────────

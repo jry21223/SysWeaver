@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::agent::memory::{Memory, SystemContext};
 use crate::config::LlmConfig;
 use crate::context::system_scan;
+use crate::executor::ssh::SshConfig;
 use crate::image::{ImageInfo, ImageSecurityScanner};
 use crate::llm::client::{LlmClient, LlmResponse};
 use crate::llm::prompt::build_system_prompt;
@@ -36,20 +37,12 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// CLI 模式构造（保持向后兼容）
     pub fn new(llm_config: LlmConfig, mode: &str, ctx: SystemContext) -> Self {
-        let session_id = Uuid::new_v4().to_string();
-        let mut memory = Memory::new();
-        memory.system_context = Some(ctx);
+        Self::new_inner(llm_config, mode, ctx, None, None)
+    }
 
-        Self {
-            llm: LlmClient::new(llm_config),
-            tools: ToolManager::new(),
-            classifier: RiskClassifier::new(),
-            audit: AuditLogger::new(&session_id),
-            memory,
-            mode: mode.to_string(),
-            max_steps: 15,
-            tui_tx: None,
-        }
+    /// CLI 模式构造（SSH 远程模式）
+    pub fn new_with_ssh(llm_config: LlmConfig, mode: &str, ctx: SystemContext, ssh: SshConfig) -> Self {
+        Self::new_inner(llm_config, mode, ctx, None, Some(ssh))
     }
 
     /// TUI 模式构造（接入事件 channel）
@@ -59,9 +52,44 @@ impl AgentLoop {
         ctx: SystemContext,
         tui_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
-        let mut agent = Self::new(llm_config, mode, ctx);
-        agent.tui_tx = Some(tui_tx);
-        agent
+        Self::new_inner(llm_config, mode, ctx, Some(tui_tx), None)
+    }
+
+    /// TUI + SSH 模式
+    pub fn new_with_tui_and_ssh(
+        llm_config: LlmConfig,
+        mode: &str,
+        ctx: SystemContext,
+        tui_tx: mpsc::Sender<AgentEvent>,
+        ssh: SshConfig,
+    ) -> Self {
+        Self::new_inner(llm_config, mode, ctx, Some(tui_tx), Some(ssh))
+    }
+
+    fn new_inner(
+        llm_config: LlmConfig,
+        mode: &str,
+        ctx: SystemContext,
+        tui_tx: Option<mpsc::Sender<AgentEvent>>,
+        ssh: Option<SshConfig>,
+    ) -> Self {
+        let session_id = Uuid::new_v4().to_string();
+        let mut memory = Memory::new();
+        memory.system_context = Some(ctx);
+        let tools = match ssh {
+            Some(cfg) => ToolManager::with_ssh(cfg),
+            None => ToolManager::new(),
+        };
+        Self {
+            llm: LlmClient::new(llm_config),
+            tools,
+            classifier: RiskClassifier::new(),
+            audit: AuditLogger::new(&session_id),
+            memory,
+            mode: mode.to_string(),
+            max_steps: 15,
+            tui_tx,
+        }
     }
 
     /// 向 TUI 发送事件（CLI 模式下 no-op）
@@ -199,7 +227,22 @@ impl AgentLoop {
 
         if self.memory.needs_refresh() {
             let new_ctx = system_scan::scan().await;
-            self.memory.refresh_system_context(new_ctx);
+            let anomalies = system_scan::detect_anomalies(&new_ctx);
+            self.memory.refresh_system_context(new_ctx.clone());
+
+            // 检测到异常时，通过事件通道发出告警
+            if !anomalies.is_empty() {
+                let warning = format!(
+                    "⚠️ 系统状态更新警告：检测到以下异常情况，请在后续操作中注意：\n{}",
+                    anomalies.iter().map(|a| format!("  - {}", a)).collect::<Vec<_>>().join("\n")
+                );
+                self.emit(AgentEvent::WatchdogAlert {
+                    severity: "⚠️ WARNING".to_string(),
+                    message: warning,
+                }).await;
+            }
+
+            self.emit(AgentEvent::SystemUpdate(new_ctx)).await;
             tracing::debug!("系统状态已刷新");
         }
 
@@ -270,17 +313,34 @@ impl AgentLoop {
         for step in 0..self.max_steps {
             let messages = self.memory.build_llm_messages();
 
-            // 调用 LLM
-            let response = match self
-                .llm
-                .chat(&system_prompt, &messages, &tool_schemas)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let err_msg = format!("LLM 调用失败: {}", e);
-                    eprintln!("❌ {}", err_msg);
-                    return Err(e);
+            // 调用 LLM（失败时最多重试 2 次，指数退避）
+            let response = {
+                let mut last_err = None;
+                let mut resp = None;
+                for attempt in 0..3u64 {
+                    match self.llm.chat(&system_prompt, &messages, &tool_schemas).await {
+                        Ok(r) => {
+                            resp = Some(r);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!("LLM 调用失败（第{}次），将重试: {}", attempt + 1, e);
+                            last_err = Some(e);
+                            if attempt < 2 {
+                                tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt + 1))).await;
+                            }
+                        }
+                    }
+                }
+                match resp {
+                    Some(r) => r,
+                    None => {
+                        let err = last_err.unwrap();
+                        let err_msg = format!("LLM 调用失败（已重试3次）: {}", err);
+                        eprintln!("❌ {}", err_msg);
+                        self.emit(AgentEvent::Error(err_msg)).await;
+                        return Err(err);
+                    }
                 }
             };
 

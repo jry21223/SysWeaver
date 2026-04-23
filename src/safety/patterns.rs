@@ -12,17 +12,22 @@ pub const CRITICAL_PATTERNS: &[&str] = &[
     r":(?:\(\)|\{)\s*\{[^}]*:\s*&",        // Fork bomb
     r"chmod\s+-R\s+[0-7]*7[0-7]*\s+/\s*$", // chmod 777 /
     r"shred\s+.*-[uzn]",                   // 安全擦除磁盘
+    r"(curl|wget)\s+.*\|\s*(bash|sh|zsh|python|perl|ruby)", // 下载并直接执行（供应链攻击向量）
+    r"(bash|sh|zsh)\s+<\s*<\s*\(curl",    // 进程替换执行远程脚本
+    r"eval\s+.*\$\(curl",                 // eval 执行远程脚本
 ];
 
 /// HIGH 级别：不易恢复，必须用户确认
 pub const HIGH_PATTERNS: &[&str] = &[
     r"userdel\s+",                     // 删除用户
     r"passwd\s+root",                  // 修改 root 密码
-    r"systemctl\s+stop\s+sshd?\b",      // 停止 SSH 服务
-    r"systemctl\s+disable\s+sshd?\b",  // 禁用 SSH 服务
+    r"systemctl\s+stop\s+\w+",         // 停止任何服务（含 sshd、nginx 等）
+    r"systemctl\s+disable\s+\w+",      // 禁用任何服务
+    r"service\s+\w+\s+stop",           // SysV 方式停止服务
     r"iptables\s+-F",                  // 清空防火墙规则
     r"iptables\s+-X",                  // 删除所有链
     r"ufw\s+--force\s+reset",          // 重置防火墙
+    r"firewall-cmd\s+--panic-on",      // firewalld 紧急模式
     r"crontab\s+-r",                   // 删除所有定时任务
     r"visudo",                         // 修改 sudo 规则
     r"rm\s+.*\.(key|pem|crt|cert)",    // 删除证书/密钥文件
@@ -32,6 +37,8 @@ pub const HIGH_PATTERNS: &[&str] = &[
     r"truncate\s+.*-s\s+0.*/(passwd|shadow|sudoers)",
     r">\s*/etc/(passwd|shadow|sudoers)",    // 覆写关键认证文件
     r"rm\s+.*\.ssh/(authorized_keys|id_rsa|id_ed25519)\b", // 删除 SSH 密钥
+    r"kill\s+-9\s+1\b",                // 强杀 PID 1（init/systemd）
+    r"pkill\s+-[0-9]*\s*(nginx|mysql|postgres|redis|ssh)",  // 强杀关键服务进程
 ];
 
 /// MEDIUM 级别：可逆但有影响，可配置是否自动确认
@@ -39,7 +46,7 @@ pub const MEDIUM_PATTERNS: &[&str] = &[
     r"useradd\s+",                         // 创建用户
     r"usermod\s+",                         // 修改用户
     r"groupadd\s+",                        // 创建用户组
-    r"systemctl\s+(restart|stop)\s+\w+",   // 重启/停止服务
+    r"systemctl\s+restart\s+\w+",          // 重启服务（stop 已移至 HIGH）
     r"chmod\s+[0-7]{3,4}\s+",              // 修改文件权限
     r"chown\s+",                           // 修改文件归属
     r"apt[\s-]+(remove|purge|autoremove)", // 卸载软件

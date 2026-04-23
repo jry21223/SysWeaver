@@ -62,4 +62,7 @@ pub enum AgentEvent {
         step: usize,
         task_hint: String,
     },
+
+    /// 语音 TTS 开关切换
+    VoiceTtsToggle(bool),
 }

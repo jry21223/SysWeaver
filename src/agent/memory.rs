@@ -40,6 +40,8 @@ pub struct SystemContext {
     pub disk_info: String,
     pub running_services: Vec<String>,
     pub package_manager: String, // apt | yum | dnf
+    /// 网络接口 IP 及监听端口摘要
+    pub network_info: String,
     #[allow(dead_code)] // reserved for cache invalidation logic
     pub collected_at: DateTime<Utc>,
 }
