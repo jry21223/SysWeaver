@@ -89,24 +89,49 @@ impl Tool for SystemTool {
         let output = match query {
             "disk" => self.run("df -h").await,
             "memory" => {
-                self.run(
-                    "free -h && echo '---' && cat /proc/meminfo \
-                     | grep -E 'MemTotal|MemFree|MemAvailable|Cached'",
-                )
-                .await
+                if cfg!(target_os = "macos") {
+                    self.run(
+                        "PAGE=$(sysctl -n hw.pagesize); TOTAL=$(sysctl -n hw.memsize); \
+                         vm_stat | awk -v page=$PAGE -v total=$TOTAL \
+                         '/Pages active/{gsub(/\\./, \"\", $3); a=$3+0} \
+                          /Pages wired down/{gsub(/\\./, \"\", $4); w=$4+0} \
+                          /Pages occupied by compressor/{gsub(/\\./, \"\", $5); c=$5+0} \
+                          END{ \
+                            used=(a+w+c)*page; free=total-used; \
+                            printf \"Total RAM : %.1f GB\\nUsed      : %.1f GB\\nFree      : %.1f GB\\nUsage     : %.1f%%\\n\", \
+                              total/1073741824, used/1073741824, free/1073741824, used/total*100 \
+                          }'",
+                    ).await
+                } else {
+                    self.run(
+                        "free -h && echo '---' && cat /proc/meminfo \
+                         | grep -E 'MemTotal|MemFree|MemAvailable|Cached'",
+                    ).await
+                }
             }
             "cpu" => {
-                self.run(
-                    "uptime && echo '---' && nproc \
-                     && cat /proc/cpuinfo | grep 'model name' | head -1",
-                )
-                .await
+                if cfg!(target_os = "macos") {
+                    self.run(
+                        "uptime && echo '---' \
+                         && sysctl -n hw.logicalcpu \
+                         && (sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model)",
+                    ).await
+                } else {
+                    self.run(
+                        "uptime && echo '---' && nproc \
+                         && cat /proc/cpuinfo | grep 'model name' | head -1",
+                    ).await
+                }
             }
             "process" => {
                 if filter.is_empty() {
-                    self.run("ps aux --sort=-%mem | head -20").await
+                    if cfg!(target_os = "macos") {
+                        // macOS ps 不支持 --sort 参数，改用 sort 管道
+                        self.run("ps aux | sort -rnk 4 | head -20").await
+                    } else {
+                        self.run("ps aux --sort=-%mem | head -20").await
+                    }
                 } else {
-                    // 使用 Command::new + 独立参数，不经 shell 插值
                     let out = Command::new("ps")
                         .arg("aux")
                         .output()
@@ -124,7 +149,6 @@ impl Tool for SystemTool {
                     self.run("cut -d: -f1,3,7 /etc/passwd | grep -v nologin | grep -v false")
                         .await
                 } else {
-                    // id 和 last 命令直接传参
                     let id_out = Command::new("id")
                         .arg(filter)
                         .output()
@@ -146,16 +170,44 @@ impl Tool for SystemTool {
                     format!("{}\n---\n{}", id_out, last_out)
                 }
             }
-            "network" => self.run("ss -tlnp && echo '---' && ip -br addr").await,
+            "network" => {
+                if cfg!(target_os = "macos") {
+                    self.run(
+                        "netstat -an | grep LISTEN | head -20 \
+                         && echo '---' \
+                         && ifconfig | grep -E 'inet [0-9]'",
+                    ).await
+                } else {
+                    self.run("ss -tlnp && echo '---' && ip -br addr").await
+                }
+            }
             "service" => {
-                if filter.is_empty() {
+                if cfg!(target_os = "macos") {
+                    if filter.is_empty() {
+                        self.run(
+                            "launchctl list 2>/dev/null \
+                             | awk 'NF>=3 && $1~/^[0-9]+$/{print $1\"\\t\"$3}' \
+                             | head -20",
+                        ).await
+                    } else {
+                        // launchctl list 过滤指定服务名（直接通过 awk 匹配避免注入）
+                        let out = Command::new("launchctl")
+                            .arg("list")
+                            .output()
+                            .await
+                            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                            .unwrap_or_default();
+                        out.lines()
+                            .filter(|l| l.contains(filter))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                } else if filter.is_empty() {
                     self.run(
                         "systemctl list-units --type=service \
                          --state=running --no-pager | head -20",
-                    )
-                    .await
+                    ).await
                 } else {
-                    // systemctl status 直接传参
                     Command::new("systemctl")
                         .arg("status")
                         .arg(filter)
@@ -167,12 +219,15 @@ impl Tool for SystemTool {
                 }
             }
             "os" => {
-                self.run(
-                    "uname -a && echo '---' \
-                     && cat /etc/os-release 2>/dev/null \
-                     || cat /etc/redhat-release 2>/dev/null",
-                )
-                .await
+                if cfg!(target_os = "macos") {
+                    self.run("uname -a && echo '---' && sw_vers").await
+                } else {
+                    self.run(
+                        "uname -a && echo '---' \
+                         && cat /etc/os-release 2>/dev/null \
+                         || cat /etc/redhat-release 2>/dev/null",
+                    ).await
+                }
             }
             _ => return Err(anyhow::anyhow!("不支持的查询类型: {}", query)),
         };

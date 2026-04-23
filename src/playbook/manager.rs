@@ -255,7 +255,7 @@ impl PlaybookManager {
         PlaybookSource::Bundled
     }
 
-    /// 查询 Playbook
+    #[allow(dead_code)] // 供 playbook 执行时按名称查询
     pub fn get(&self, name: &str) -> Option<&Playbook> {
         self.playbooks.get(name)
     }

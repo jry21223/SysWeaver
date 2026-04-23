@@ -1,3 +1,3 @@
 mod manager;
 
-pub use manager::{LoadStats, PlaybookManager, PlaybookSource};
+pub use manager::{PlaybookManager, PlaybookSource};

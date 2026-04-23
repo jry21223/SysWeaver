@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
+use tokio::sync::watch;
 use tokio::time::interval;
 
 /// Watchdog 监控系统：后台监控资源使用，异常时发送告警
@@ -12,6 +13,8 @@ pub struct Watchdog {
     alert_tx: Sender<Alert>,
     /// 运行状态
     running: Arc<std::sync::atomic::AtomicBool>,
+    /// 关闭信号发送端（broadcast via watch channel）
+    shutdown_tx: watch::Sender<bool>,
 }
 
 /// 监控规则
@@ -31,6 +34,7 @@ pub struct MonitorRule {
 
 /// 监控指标类型
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // 完整指标集，部分变体在当前版本未激活
 pub enum MetricType {
     /// 磁盘使用率（百分比）
     DiskUsage { mount_point: String },
@@ -46,6 +50,7 @@ pub enum MetricType {
 
 /// 告警级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Info 级别预留用于未来通知功能
 pub enum AlertSeverity {
     Info,
     Warning,
@@ -65,7 +70,7 @@ impl std::fmt::Display for AlertSeverity {
 /// 告警消息
 #[derive(Debug, Clone)]
 pub struct Alert {
-    /// 触发的规则名称
+    #[allow(dead_code)] // 供告警日志和 UI 显示使用
     pub rule_name: String,
     /// 告警级别
     pub severity: AlertSeverity,
@@ -80,17 +85,20 @@ pub struct Alert {
 }
 
 impl Watchdog {
-    /// 创建新的 Watchdog 实例
+    #[allow(dead_code)] // 供 watchdog 启动命令调用
     pub fn new(alert_tx: Sender<Alert>) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
             rules: Vec::new(),
             alert_tx,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_tx,
         }
     }
 
     /// 创建带默认规则的 Watchdog
     pub fn with_default_rules(alert_tx: Sender<Alert>) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         let rules = vec![
             MonitorRule {
                 name: "磁盘空间告警".to_string(),
@@ -130,10 +138,11 @@ impl Watchdog {
             rules,
             alert_tx,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_tx,
         }
     }
 
-    /// 添加监控规则
+    #[allow(dead_code)] // 供动态添加自定义监控规则使用
     pub fn add_rule(&mut self, rule: MonitorRule) {
         self.rules.push(rule);
     }
@@ -145,27 +154,38 @@ impl Watchdog {
         for rule in self.rules.clone() {
             let tx = self.alert_tx.clone();
             let running = self.running.clone();
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
 
             tokio::spawn(async move {
                 let mut timer = interval(Duration::from_secs(rule.interval_secs));
 
-                while running.load(std::sync::atomic::Ordering::SeqCst) {
-                    timer.tick().await;
-
-                    if let Ok(value) = check_metric(&rule.metric) {
-                        if should_alert(value, rule.threshold, &rule.metric) {
-                            let alert = Alert {
-                                rule_name: rule.name.clone(),
-                                severity: rule.severity,
-                                current_value: value,
-                                threshold: rule.threshold,
-                                timestamp: chrono::Utc::now(),
-                                message: format_alert_message(&rule, value),
-                            };
-
-                            if tx.send(alert).await.is_err() {
-                                tracing::warn!("告警通道已关闭");
+                loop {
+                    tokio::select! {
+                        // 关闭信号：立即退出
+                        _ = shutdown_rx.changed() => {
+                            tracing::debug!("监控规则 '{}' 收到关闭信号", rule.name);
+                            break;
+                        }
+                        // 定时检查
+                        _ = timer.tick() => {
+                            if !running.load(std::sync::atomic::Ordering::SeqCst) {
                                 break;
+                            }
+                            if let Ok(value) = check_metric(&rule.metric) {
+                                if should_alert(value, rule.threshold, &rule.metric) {
+                                    let alert = Alert {
+                                        rule_name: rule.name.clone(),
+                                        severity: rule.severity,
+                                        current_value: value,
+                                        threshold: rule.threshold,
+                                        timestamp: chrono::Utc::now(),
+                                        message: format_alert_message(&rule, value),
+                                    };
+                                    if tx.send(alert).await.is_err() {
+                                        tracing::warn!("告警通道已关闭");
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -178,9 +198,11 @@ impl Watchdog {
         tracing::info!("Watchdog 监控已启动，规则数: {}", self.rules.len());
     }
 
-    /// 停止监控
+    /// 停止监控（立即通知所有监控任务退出）
     pub fn stop(&self) {
         self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        // 发送关闭信号，让所有 spawn 的任务立即退出 select!
+        let _ = self.shutdown_tx.send(true);
         tracing::info!("Watchdog 监控已停止");
     }
 }
@@ -314,7 +336,7 @@ fn format_alert_message(rule: &MonitorRule, value: f64) -> String {
 
 /// 告警处理器：接收并处理告警消息
 pub struct AlertHandler {
-    alert_rx: Receiver<Alert>,
+    pub alert_rx: Receiver<Alert>,
 }
 
 impl AlertHandler {

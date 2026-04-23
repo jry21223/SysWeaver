@@ -1,10 +1,37 @@
 pub mod file;
+pub mod process;
+pub mod service;
 pub mod shell;
 pub mod system;
+pub mod user;
 
 use crate::types::tool::{ToolCall, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
+
+pub fn to_openai_tool_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+pub fn from_openai_tool_name(name: &str) -> String {
+    if name.contains('_') {
+        let parts: Vec<&str> = name.splitn(2, '_').collect();
+        if parts.len() == 2 {
+            format!("{}.{}", parts[0], parts[1])
+        } else {
+            name.to_string()
+        }
+    } else {
+        name.to_string()
+    }
+}
+
+pub fn is_valid_openai_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
 
 /// 所有工具必须实现的统一接口
 #[async_trait]
@@ -33,6 +60,9 @@ impl ToolManager {
                 Box::new(file::FileWriteTool::new()),
                 Box::new(file::FileSearchTool::new()),
                 Box::new(system::SystemTool::new()),
+                Box::new(process::ProcessTool::new()),
+                Box::new(service::ServiceTool::new()),
+                Box::new(user::UserTool::new()),
             ],
         }
     }

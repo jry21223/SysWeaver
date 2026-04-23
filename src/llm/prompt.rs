@@ -4,23 +4,31 @@ use crate::tools::ToolManager;
 /// 构建注入了系统上下文的 System Prompt
 pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) -> String {
     let env_section = match ctx {
-        Some(ctx) => format!(
-            r#"【当前系统环境】
+        Some(ctx) => {
+            let ssh_warning = if ctx.running_services.iter().any(|s| s.contains("ssh")) {
+                "\n⚠️  SSH 服务正在运行：停止 SSH 将断开所有远程连接，包括当前会话，请极度谨慎。"
+            } else {
+                ""
+            };
+            format!(
+                r#"【当前系统环境】
 - 操作系统：{}
 - 主机名：{}
 - CPU：{}
 - 内存：{}
 - 磁盘：{}
 - 活跃服务：{}
-- 包管理器：{}"#,
-            ctx.os_info,
-            ctx.hostname,
-            ctx.cpu_info,
-            ctx.memory_info,
-            ctx.disk_info,
-            ctx.running_services.join(", "),
-            ctx.package_manager,
-        ),
+- 包管理器：{}{}"#,
+                ctx.os_info,
+                ctx.hostname,
+                ctx.cpu_info,
+                ctx.memory_info,
+                ctx.disk_info,
+                ctx.running_services.join(", "),
+                ctx.package_manager,
+                ssh_warning,
+            )
+        }
         None => "【系统环境】尚未采集，请先执行 system.info 工具获取环境信息".to_string(),
     };
 
@@ -29,18 +37,70 @@ pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) ->
 
 {}
 
+【工具使用优先级】
+1. 查询磁盘/内存/CPU/进程/用户/服务 → 优先用 system.info 或专用工具
+2. 用户管理（创建/删除/查询用户）→ 用 user.manage
+3. 进程管理（查找/终止进程）→ 用 process.manage
+4. 服务管理（启动/停止/重启服务）→ 用 service.manage
+5. 文件读取/搜索 → 用 file.read / file.search
+6. 配置文件修改 → 用 file.write（含备份机制）
+7. 其他系统操作 → 用 shell.exec（最后手段）
+
 【行为规则】
 1. 必须通过工具调用执行操作，绝不直接输出 bash 命令让用户执行
 2. 每次只调用一个工具，等待结果后再决定下一步
-3. 优先使用专用工具（system.info / file.read），其次才用 shell.exec
-4. 使用简洁的中文回复用户
-5. 执行写操作前，评估是否需要先用 dry_run: true 预览
-6. 完成任务后，主动向用户汇报执行结果摘要
+3. 优先使用专用工具（user.manage、service.manage、process.manage），其次才用 shell.exec
+4. 使用简洁的中文回复用户，结果用结构化方式呈现
+5. 执行写操作/破坏性操作前，先用 dry_run: true 预览效果
+6. 多步骤任务完成后，主动汇报：已完成哪些步骤、最终结果、建议后续操作
+7. 每次工具调用前，简短说明「本步骤目的」，让用户了解你的推理过程
 
-【重要约束】
-- 不得绕过安全系统，所有操作通过工具调用发起
+【回复格式规则】
+- 查询内存信息时：必须包含"内存"及具体用量（如 MB、GB、%），列出占用高的进程
+- 查询磁盘信息时：必须包含"磁盘"及挂载点使用率
+- 查询进程信息时：必须包含"进程"及 PID、内存占用
+- 查询网络状态时：必须包含"监听"端口列表及协议
+- 查询用户信息时：必须包含"用户"及用户名列表
+- 查询服务信息时：必须包含"服务"及运行状态
+- 查询系统状态时：必须包含"操作系统"、"主机名"等基本信息
+- 安装软件建议时：必须说明安装命令（apt/yum/brew 等）和软件包名
+- 高风险操作被拒绝时：必须用"危险"、"拒绝"、"阻止"等词说明原因
+
+【多步骤任务执行规则】
+- 开始前：用 1-2 行说明「执行计划」，列出将要执行的步骤
+- 执行中：每步完成后用一行说明结果（✅ 成功 / ❌ 失败 + 原因）
+- 完成后：必须输出结构化总结，格式：
+  ✅ 任务完成摘要
+  第1步：[工具名] → [结果状态]
+  第2步：[工具名] → [结果状态]
+  ...
+  总体结果：[成功/部分成功/失败] — [一句话说明]
+  后续建议：[可选操作提示]
+- 如果某步失败：分析原因 → 尝试替代方案 → 在总结中标注 ❌
+
+【错误恢复规则】
+- 工具返回失败时：分析错误原因，尝试替代命令，不要直接放弃
+- 权限不足（Permission denied）：告知用户需要 sudo 权限，并建议以 sudo 重试
+- 命令不存在（command not found）：根据包管理器提示安装，或使用同等命令替代
+- 超时或无响应：缩小范围重试（加 head/limit），或改用更轻量的查询方式
+- 工具失败后最多重试 2 次，每次使用不同参数或替代工具
+- 重试时必须说明：原命令失败原因 + 替代方案选择依据
+
+【环境自适应规则】
+- Ubuntu/Debian：使用 apt，ufw，journalctl
+- CentOS/RHEL/openEuler：使用 yum/dnf，firewalld，systemd
+- macOS：使用 brew，launchctl，系统命令
+- 当前包管理器已注入系统上下文，请据此自动选择正确命令
+
+【风险处置与可解释性规则】
+- 操作被安全层拒绝时：清晰说明「危险原因」+「潜在影响」+「安全替代方案」
+- HIGH 风险操作用户确认后：说明「操作内容」+「预期效果」+「回滚方式」
 - 对敏感系统文件（/etc/passwd, /etc/shadow, .ssh/）操作时需格外谨慎
-- 若不确定操作影响，优先选择只读查询"#,
+- 若不确定操作影响，优先选择只读查询再决定
+
+【安全约束】
+- 不得绕过安全系统，所有操作通过工具调用发起
+- 高风险操作已被安全层拦截，遇到拒绝时向用户解释危险原因，不得重试"#,
         env_section,
     )
 }
@@ -56,9 +116,28 @@ pub fn build_planner_prompt(system_context: &str) -> String {
 
 【任务分析规则】
 分析用户请求，判断属于哪种类型：
-1. single - 单步任务：一句话就能完成的操作（如"查看磁盘"、"列出进程"）
-2. multi - 多步任务：需要多个步骤才能完成（如"安装并配置 nginx"、"备份并清理日志"）
-3. ambiguous - 模糊任务：描述不够明确，需要用户提供更多选择
+1. single - 单步任务：一句话就能完成的操作，或者咨询/分析类请求（如"查看磁盘"、"告诉我如何安装软件"、"磁盘空间不足怎么办"、"给我状态报告"）
+2. multi - 多步任务：需要多个顺序步骤才能完成（如"安装并配置 nginx"、"备份并清理日志"、"把 nginx 改到 8080 端口并重启"）
+3. ambiguous - 真正模糊任务：用户意图完全不明确，无法判断要执行什么操作，必须询问
+
+【重要原则】
+- 咨询类/分析类请求（如"怎么办"、"给我建议"、"告诉我"、"帮我看看"）= single，直接执行
+- 查询系统信息的请求 = single，直接执行
+- 单个动词+单个目标的操作 = single，直接执行
+- 只有当用户的意图有 2+ 种完全不同且互斥的执行方向时，才返回 ambiguous
+- 操作对象明确时（即使范围较广），优先返回 single 或 multi
+
+【ambiguous 的判断标准（必须同时满足）】
+- 用户的关键动词不明确（无法判断是"查看"还是"删除"还是"安装"）
+- 不同理解会导致截然不同的系统操作
+- 贸然执行可能导致用户不想要的结果
+
+【不应该是 ambiguous 的例子】
+- "磁盘空间不足怎么办" → single（分析并给建议）
+- "告诉我如何安装软件包" → single（根据系统说明安装方法）
+- "查看系统状态" → single（综合报告）
+- "查看内存占用高的进程" → single（列出进程）
+- "帮我清理磁盘" 没有额外上下文 → ambiguous（不知道清理哪里）
 
 【输出格式】
 必须返回以下 JSON 格式（不要输出其他内容）：
@@ -71,14 +150,6 @@ pub fn build_planner_prompt(system_context: &str) -> String {
 
 模糊任务：
 {{"type": "ambiguous", "options": [{{"label": "A", "description": "选项描述", "preview": "操作预览"}}, ...]}}
-
-【模糊任务示例】
-用户说"清理磁盘"太笼统，应返回：
-{{"type": "ambiguous", "options": [
-  {{"label": "A", "description": "清理 /tmp 临时文件", "preview": "安全，约释放 1-2GB"}},
-  {{"label": "B", "description": "清理旧日志文件", "preview": "需先统计大小，再确认"}},
-  {{"label": "C", "description": "查找大文件", "preview": "仅查询不删除，由你决定"}}
-]}}
 
 只输出 JSON，不要解释。"#,
         system_context,

@@ -1,0 +1,213 @@
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+};
+use unicode_width::UnicodeWidthStr;
+
+use crate::ui::state::{AppState, ChatLine};
+use crate::ui::theme;
+
+/// 清理控制字符：\t → 两个空格，\r 丢弃，其他控制字符丢弃
+/// 防止 crossterm 把 \t 直接发送到终端触发 tab-stop 导致乱码
+fn sanitize_output(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\t' => { out.push(' '); out.push(' '); }
+            '\r' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
+    let block = Block::default()
+        .title(Span::styled(" 💬 对话 ", theme::style_border_active()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme::style_border_active())
+        .style(Style::default().bg(theme::CLR_BG));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // 将所有 ChatLine 转为 ratatui Line 列表
+    let mut lines: Vec<Line> = Vec::new();
+
+    for msg in &state.messages {
+        match msg {
+            ChatLine::UserMsg(text) => {
+                lines.push(Line::from(vec![
+                    Span::styled("👤 你：", theme::style_user()),
+                ]));
+                // 支持多行用户输入
+                for (i, l) in text.lines().enumerate() {
+                    let prefix = if i == 0 { "" } else { "      " };
+                    lines.push(Line::from(vec![
+                        Span::raw(prefix),
+                        Span::styled(l.to_string(), theme::style_user()),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+
+            ChatLine::AgentMsg(text) => {
+                lines.push(Line::from(vec![
+                    Span::styled("🤖 Agent：", theme::style_agent()),
+                ]));
+                for (i, l) in text.lines().enumerate() {
+                    let prefix = if i == 0 { "" } else { "         " };
+                    lines.push(Line::from(vec![
+                        Span::raw(prefix),
+                        Span::styled(sanitize_output(l), theme::style_agent()),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+
+            ChatLine::ToolCallLine { step, tool, args, dry_run } => {
+                let dry_tag = if *dry_run {
+                    Span::styled(" [DRY-RUN]", theme::style_dryrun())
+                } else {
+                    Span::raw("")
+                };
+
+                // 截断 args 避免过长
+                let args_display = if args.width() > 60 {
+                    format!("{}…", &args[..args.char_indices().nth(57).map(|(i,_)| i).unwrap_or(args.len())])
+                } else {
+                    args.clone()
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  🔧 Step {}: ", step), theme::style_tool()),
+                    Span::styled(tool.clone(), Style::default().fg(theme::CLR_TOOL).add_modifier(Modifier::UNDERLINED)),
+                    Span::styled(format!("({})", args_display), theme::style_dim()),
+                    dry_tag,
+                ]));
+            }
+
+            ChatLine::ToolResultLine { success, preview, duration_ms } => {
+                if *success {
+                    lines.push(Line::from(vec![
+                        Span::styled("     ✅ ", theme::style_success()),
+                        Span::styled(sanitize_output(preview), Style::default().fg(Color::White)),
+                        Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim()),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("     ❌ ", theme::style_error()),
+                        Span::styled(sanitize_output(preview), theme::style_error()),
+                        Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim()),
+                    ]));
+                }
+            }
+
+            ChatLine::ErrorLine(msg) => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ⚠️  ", theme::style_error()),
+                    Span::styled(sanitize_output(msg), theme::style_error()),
+                ]));
+                lines.push(Line::from(""));
+            }
+
+            ChatLine::Separator => {
+                let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
+                lines.push(Line::from(Span::styled(sep, theme::style_dim())));
+            }
+
+            ChatLine::WatchdogAlert { severity, message } => {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", severity), Style::default().fg(Color::Rgb(255, 180, 50)).add_modifier(Modifier::BOLD)),
+                    Span::styled(sanitize_output(message), Style::default().fg(Color::Rgb(255, 220, 100))),
+                ]));
+                lines.push(Line::from(""));
+            }
+        }
+    }
+
+    // spinner 行（thinking 状态）
+    if state.is_thinking {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} 思考中…", state.spinner_char()),
+                Style::default()
+                    .fg(Color::Rgb(150, 150, 200))
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+
+    // 空对话时显示欢迎提示
+    if state.messages.is_empty() && !state.is_thinking {
+        let welcome = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  欢迎使用 Agent Unix！",
+                Style::default().fg(Color::Rgb(180, 180, 255)).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("  你可以这样说：", theme::style_dim())),
+            Line::from(Span::styled("    • 查看当前磁盘使用情况", theme::style_dim())),
+            Line::from(Span::styled("    • 帮我把 nginx 配置到 8080 端口", theme::style_dim())),
+            Line::from(Span::styled("    • 列出所有正在运行的进程", theme::style_dim())),
+            Line::from(Span::styled("    • 清理 /var/log 下超过 30 天的日志", theme::style_dim())),
+            Line::from(""),
+            Line::from(Span::styled("  快捷键：/undo 撤销  /history 历史  /exit 退出", theme::style_dim())),
+        ];
+        let para = Paragraph::new(welcome)
+            .wrap(Wrap { trim: false });
+        f.render_widget(para, inner);
+        return;
+    }
+
+    // 计算每个 Line 折行后的实际视觉行数（Wrap 模式下一个 Line 可占多行）
+    let visible_height = inner.height as usize;
+    let inner_width = inner.width as usize;
+
+    let total_visual_rows: usize = if inner_width == 0 {
+        lines.len()
+    } else {
+        lines.iter().map(|line| {
+            let w = line.width();
+            if w == 0 { 1 } else { (w + inner_width - 1) / inner_width }
+        }).sum::<usize>().max(1)
+    };
+
+    let bottom_scroll = total_visual_rows.saturating_sub(visible_height);
+
+    let scroll = if state.scroll_offset == usize::MAX {
+        // 自动滚到底
+        bottom_scroll
+    } else if state.scroll_offset > total_visual_rows {
+        // scroll_up 从 usize::MAX 出发：usize::MAX - N 表示距底部 N 行
+        let steps = usize::MAX - state.scroll_offset;
+        bottom_scroll.saturating_sub(steps)
+    } else {
+        state.scroll_offset.min(bottom_scroll)
+    };
+
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll as u16, 0));
+
+    f.render_widget(para, inner);
+
+    // 右下角显示滚动位置（如果不在底部）
+    if scroll + visible_height < total_visual_rows {
+        let hint = format!(" ↓{} ", total_visual_rows - scroll - visible_height);
+        let hint_area = Rect {
+            x: area.x + area.width.saturating_sub(hint.len() as u16 + 2),
+            y: area.y + area.height - 1,
+            width: hint.len() as u16 + 2,
+            height: 1,
+        };
+        let hint_widget = Paragraph::new(Span::styled(hint, theme::style_dim()));
+        f.render_widget(hint_widget, hint_area);
+    }
+}

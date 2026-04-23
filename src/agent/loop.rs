@@ -1,10 +1,14 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use inquire::Confirm;
+use serde_json::json;
 use std::io::{self, Write};
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::agent::memory::{Memory, SystemContext};
 use crate::config::LlmConfig;
 use crate::context::system_scan;
+use crate::image::{ImageInfo, ImageSecurityScanner};
 use crate::llm::client::{LlmClient, LlmResponse};
 use crate::llm::prompt::build_system_prompt;
 use crate::safety::audit::AuditLogger;
@@ -12,6 +16,7 @@ use crate::safety::classifier::RiskClassifier;
 use crate::tools::ToolManager;
 use crate::types::risk::RiskLevel;
 use crate::types::tool::{RollbackPlan, ToolCall, ToolResult};
+use crate::ui::AgentEvent;
 
 /// Agent 核心循环：ReAct（Reason → Act → Observe）模式
 pub struct AgentLoop {
@@ -24,9 +29,12 @@ pub struct AgentLoop {
     mode: String,
     /// 最大执行步数（防止死循环）
     max_steps: usize,
+    /// TUI 事件发送器（None = CLI 模式）
+    tui_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
 impl AgentLoop {
+    /// CLI 模式构造（保持向后兼容）
     pub fn new(llm_config: LlmConfig, mode: &str, ctx: SystemContext) -> Self {
         let session_id = Uuid::new_v4().to_string();
         let mut memory = Memory::new();
@@ -40,15 +48,224 @@ impl AgentLoop {
             memory,
             mode: mode.to_string(),
             max_steps: 15,
+            tui_tx: None,
         }
+    }
+
+    /// TUI 模式构造（接入事件 channel）
+    pub fn new_with_tui(
+        llm_config: LlmConfig,
+        mode: &str,
+        ctx: SystemContext,
+        tui_tx: mpsc::Sender<AgentEvent>,
+    ) -> Self {
+        let mut agent = Self::new(llm_config, mode, ctx);
+        agent.tui_tx = Some(tui_tx);
+        agent
+    }
+
+    /// 向 TUI 发送事件（CLI 模式下 no-op）
+    async fn emit(&self, event: AgentEvent) {
+        if let Some(tx) = &self.tui_tx {
+            let _ = tx.send(event).await;
+        }
+    }
+
+    /// 获取操作历史摘要（供 /history 命令使用）
+    pub fn get_history_summary(&self) -> String {
+        let ops = &self.memory.operations;
+        if ops.is_empty() {
+            return "📜 暂无操作记录".to_string();
+        }
+        let lines: Vec<String> = ops
+            .iter()
+            .rev()
+            .take(10)
+            .enumerate()
+            .map(|(i, op)| {
+                let ok = op.result.as_ref().map(|r| r.success).unwrap_or(false);
+                let icon = if ok { "✅" } else { "❌" };
+                let undo = if op.rollback.is_some() { "（可撤销）" } else { "" };
+                format!("  {}. {} {} {}", i + 1, icon, op.tool_call.tool, undo)
+            })
+            .collect();
+        format!("📜 最近操作：\n{}", lines.join("\n"))
     }
 
     /// 执行一条用户指令，返回最终回复文本
     pub async fn run(&mut self, user_input: &str, dry_run: bool) -> Result<String> {
         self.memory.push_user_text(user_input);
+        self.run_inner(user_input, dry_run).await
+    }
+
+    pub async fn undo_last(&mut self) -> Result<String> {
+        let rollback = self
+            .memory
+            .last_undoable()
+            .and_then(|op| op.rollback.clone())
+            .ok_or_else(|| anyhow!("没有可撤销的操作"))?;
+
+        if rollback.commands.is_empty() {
+            return Ok(format!(
+                "⚠️  {}\n当前回滚计划需要手动处理，无法自动执行。",
+                rollback.description
+            ));
+        }
+
+        let mut summaries = Vec::new();
+        summaries.push(format!("↩️  撤销：{}", rollback.description));
+        if rollback.has_side_effects {
+            summaries.push("注意：此回滚操作可能有副作用".to_string());
+        }
+
+        for command in &rollback.commands {
+            let tool_call = ToolCall {
+                tool: "shell.exec".to_string(),
+                args: json!({ "command": command }),
+                reason: Some("执行回滚计划".to_string()),
+                dry_run: false,
+            };
+            let result = self.execute_tool_call("undo", tool_call, false).await?;
+
+            if result.success {
+                let line = result.stdout.lines().next().unwrap_or("（无输出）");
+                summaries.push(format!("✅ {}", line));
+            } else {
+                let line = result.stderr.lines().next().unwrap_or("（无错误输出）");
+                summaries.push(format!("❌ {}", line));
+                break;
+            }
+        }
+
+        Ok(summaries.join("\n"))
+    }
+
+    async fn execute_tool_call(
+        &mut self,
+        user_input: &str,
+        tool_call: ToolCall,
+        record_rollback: bool,
+    ) -> Result<ToolResult> {
+        let risk = self.classifier.assess(&tool_call);
+
+        if risk.level.is_blocked() {
+            self.audit.log_blocked(user_input, &tool_call, &risk.reason);
+            let rejection_msg = format!(
+                "操作已被强制阻止（CRITICAL 级别）: {}；{}",
+                risk.reason, risk.impact
+            );
+            // CLI 模式下立即打印拒绝原因（TUI 模式通过 emit 传递）
+            if self.tui_tx.is_none() {
+                println!("\n🚫 【CRITICAL 危险操作已拒绝】");
+                println!("   原因: {}", risk.reason);
+                println!("   影响: {}", risk.impact);
+                if let Some(alt) = &risk.alternative {
+                    println!("   建议: {}", alt);
+                }
+            }
+            return Ok(ToolResult::failure(
+                &tool_call.tool,
+                &rejection_msg,
+                -1,
+            ));
+        }
+
+        if risk.level == RiskLevel::High {
+            let confirmed = self.prompt_high_risk_confirmation(&tool_call, &risk).await?;
+            self.audit
+                .log_operation(user_input, &tool_call, &risk.level, confirmed, None);
+            if !confirmed {
+                return Ok(ToolResult::failure(&tool_call.tool, "用户取消了此操作", -1));
+            }
+        } else if risk.level == RiskLevel::Medium && self.mode == "safe" {
+            let confirmed = self.prompt_medium_risk_confirmation(&tool_call).await?;
+            self.audit
+                .log_operation(user_input, &tool_call, &risk.level, confirmed, None);
+            if !confirmed {
+                return Ok(ToolResult::failure(&tool_call.tool, "用户取消了此操作", -1));
+            }
+        }
+
+        let result = self.tools.dispatch(&tool_call).await?;
+        self.audit
+            .log_operation(user_input, &tool_call, &risk.level, false, Some(&result));
+
+        let rollback = if record_rollback {
+            self.generate_rollback_plan(&tool_call, &result)
+        } else {
+            None
+        };
+        self.memory.record_operation(tool_call, &result, rollback);
+
+        if self.memory.needs_refresh() {
+            let new_ctx = system_scan::scan().await;
+            self.memory.refresh_system_context(new_ctx);
+            tracing::debug!("系统状态已刷新");
+        }
+
+        Ok(result)
+    }
+
+    /// 执行一条用户指令（支持图片），返回最终回复文本
+    /// 包含图片安全扫描和审计日志
+    pub async fn run_with_images(
+        &mut self,
+        user_input: &str,
+        images: &[ImageInfo],
+        dry_run: bool,
+    ) -> Result<String> {
+        // 1. 图片安全扫描
+        let scanner = ImageSecurityScanner::new();
+        let scans = scanner.scan_batch(images);
+
+        // 2. 显示安全警告
+        let user_warning = scanner.build_user_warning(&scans);
+        if !user_warning.is_empty() {
+            println!("\n{}", user_warning);
+
+            // HIGH 风险图片：询问用户是否继续
+            if scans.iter().any(|s| s.risk_level == RiskLevel::High) {
+                print!("是否继续处理这些图片？(yes/no) › ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if input.trim().to_lowercase() != "yes" {
+                    return Ok("已取消：图片存在安全风险，拒绝处理。".to_string());
+                }
+            }
+        }
+
+        // 3. 记录审计日志
+        for (i, (img, scan)) in images.iter().zip(scans.iter()).enumerate() {
+            let mut record = crate::image::ImageAuditRecord::new(img, scan.clone());
+            record.set_user_decision(if scan.risk_level == RiskLevel::High {
+                "用户确认继续"
+            } else {
+                "自动通过"
+            });
+            self.audit.log_custom("image_input", &record.to_json_line());
+            tracing::debug!("图片 #{} 安全扫描: {} 风险", i + 1, scan.risk_level.label());
+        }
+
+        // 4. 构建带图片的用户消息
+        // 将安全提示注入到用户文本中
+        let security_prompt = scanner.build_security_prompt(&scans);
+        let final_input = if security_prompt.is_empty() {
+            user_input.to_string()
+        } else {
+            format!("{}\n\n{}", security_prompt, user_input)
+        };
+
+        self.memory.push_user_message_with_images(&final_input, images);
+        self.run_inner(&final_input, dry_run).await
+    }
+
+    /// 内部执行逻辑（共享 run 和 run_with_images）
+    async fn run_inner(&mut self, user_input: &str, dry_run: bool) -> Result<String> {
 
         let system_prompt = build_system_prompt(self.memory.system_context.as_ref(), &self.tools);
         let tool_schemas = self.tools.all_schemas();
+        let mut completed_tools: Vec<(String, bool)> = Vec::new();
 
         for step in 0..self.max_steps {
             let messages = self.memory.build_llm_messages();
@@ -83,8 +300,14 @@ impl AgentLoop {
                         tool_call.dry_run = true;
                     }
 
-                    // 打印工具调用信息（让用户看到 Agent 在做什么）
-                    self.print_tool_call_info(step + 1, &tool_call);
+                    // 发送步骤进度事件（TUI 状态栏）
+                    self.emit(AgentEvent::StepProgress {
+                        step: step + 1,
+                        task_hint: tool_call.tool.clone(),
+                    }).await;
+
+                    // 发送工具调用事件（TUI/CLI 双路）
+                    self.emit_tool_call(step + 1, &tool_call).await;
 
                     // 保存 assistant 的 tool_use 消息到历史
                     self.memory.push_raw_message(serde_json::json!({
@@ -92,101 +315,14 @@ impl AgentLoop {
                         "content": assistant_content,
                     }));
 
-                    // 风险评估
-                    let risk = self.classifier.assess(&tool_call);
+                    let tool_result = self.execute_tool_call(user_input, tool_call.clone(), true).await?;
 
-                    let tool_result = if risk.level.is_blocked() {
-                        // CRITICAL：直接拒绝，记录审计，反馈给 LLM
-                        self.audit.log_blocked(user_input, &tool_call, &risk.reason);
-                        let rejection = format!(
-                            "🚨 操作已被强制阻止（CRITICAL 级别）\n原因：{}\n影响：{}\n{}",
-                            risk.reason,
-                            risk.impact,
-                            risk.alternative.as_deref().unwrap_or(""),
-                        );
-                        println!("\n{}", rejection);
-                        self.memory.push_tool_result(&tool_use_id, &rejection, true);
-                        continue;
-                    } else if risk.level == RiskLevel::High {
-                        // HIGH：需要用户确认
-                        let confirmed = self.prompt_high_risk_confirmation(&tool_call, &risk)?;
-                        self.audit.log_operation(
-                            user_input,
-                            &tool_call,
-                            &risk.level,
-                            confirmed,
-                            None,
-                        );
+                    // 记录完成的步骤（用于 max_steps 摘要）
+                    completed_tools.push((tool_call.tool.clone(), tool_result.success));
 
-                        if !confirmed {
-                            let msg = "用户取消了此操作".to_string();
-                            println!("⛔ 操作已取消");
-                            self.memory.push_tool_result(&tool_use_id, &msg, false);
-                            continue;
-                        }
-                        // 执行
-                        let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(
-                            user_input,
-                            &tool_call,
-                            &risk.level,
-                            true,
-                            Some(&result),
-                        );
-                        result
-                    } else if risk.level == RiskLevel::Medium && self.mode == "safe" {
-                        // safe 模式下，Medium 风险也需确认
-                        let confirmed = self.prompt_medium_risk_confirmation(&tool_call)?;
-                        self.audit.log_operation(
-                            user_input,
-                            &tool_call,
-                            &risk.level,
-                            confirmed,
-                            None,
-                        );
-
-                        if !confirmed {
-                            let msg = "用户取消了此操作".to_string();
-                            println!("⛔ 操作已取消");
-                            self.memory.push_tool_result(&tool_use_id, &msg, false);
-                            continue;
-                        }
-                        let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(
-                            user_input,
-                            &tool_call,
-                            &risk.level,
-                            true,
-                            Some(&result),
-                        );
-                        result
-                    } else {
-                        // Safe / Low / Medium(非safe模式)：直接执行
-                        let result = self.tools.dispatch(&tool_call).await?;
-                        self.audit.log_operation(
-                            user_input,
-                            &tool_call,
-                            &risk.level,
-                            false,
-                            Some(&result),
-                        );
-                        result
-                    };
-
-                    // 记录操作（含 Undo 方案）
-                        let rollback = self.generate_rollback_plan(&tool_call, &tool_result);
-                        self.memory.record_operation(tool_call, &tool_result, rollback);
-
-                    // 检查是否需要刷新系统状态（多轮对话后更新环境）
-                    if self.memory.needs_refresh() {
-                        let new_ctx = system_scan::scan().await;
-                        self.memory.refresh_system_context(new_ctx);
-                        tracing::debug!("系统状态已刷新");
-                    }
-
-                    // 构建工具结果内容反馈给 LLM
+                    // 发送工具结果事件（TUI/CLI 双路）
+                    self.emit_tool_result(&tool_result).await;
                     let result_content = self.format_tool_result(&tool_result);
-                    self.print_tool_result_info(&tool_result);
 
                     self.memory.push_tool_result(
                         &tool_use_id,
@@ -197,79 +333,143 @@ impl AgentLoop {
             }
         }
 
+        // 达到最大步数：生成已完成步骤摘要
+        let step_summary = completed_tools
+            .iter()
+            .enumerate()
+            .map(|(i, (tool, ok))| {
+                let icon = if *ok { "✅" } else { "❌" };
+                format!("  第{}步: {} {}", i + 1, icon, tool)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         Ok(format!(
-            "⚠️  已达到最大执行步数限制（{}步），任务可能未完全完成。请重新描述您的需求。",
-            self.max_steps
+            "⚠️  已执行 {} 步（上限 {} 步），任务可能未完全完成。\n\n已完成步骤：\n{}\n\n请继续描述下一步需求，或告诉我哪部分未完成。",
+            completed_tools.len(),
+            self.max_steps,
+            if step_summary.is_empty() { "  （无工具调用）".to_string() } else { step_summary }
         ))
     }
 
-    /// 展示 HIGH 风险确认对话框
-    fn prompt_high_risk_confirmation(
+    /// HIGH RISK 确认：TUI 模式走 oneshot channel，CLI 模式走 inquire
+    async fn prompt_high_risk_confirmation(
         &self,
         call: &ToolCall,
         risk: &crate::types::risk::RiskAssessment,
     ) -> Result<bool> {
-        println!("\n{}", "═".repeat(60));
-        println!("⚠️   高风险操作 — 需要您确认");
-        println!("{}", "═".repeat(60));
-        println!("工具：{}", call.tool);
-        println!(
-            "参数：{}",
-            serde_json::to_string_pretty(&call.args).unwrap_or_default()
-        );
-        println!("风险：{}", risk.reason);
-        println!("影响：{}", risk.impact);
-        if let Some(alt) = &risk.alternative {
-            println!("建议：{}", alt);
-        }
-        println!("{}", "═".repeat(60));
-        print!("输入 'yes' 确认执行，其他任意键取消 › ");
-        io::stdout().flush()?;
+        if let Some(tx) = &self.tui_tx {
+            // TUI 模式：发弹窗事件，等待用户按 Y/N
+            let (confirm_tx, confirm_rx) = oneshot::channel::<bool>();
+            let command_preview = call.args["command"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Ok(input.trim().to_lowercase() == "yes")
-    }
+            let _ = tx.send(AgentEvent::RiskPrompt {
+                tool: call.tool.clone(),
+                command_preview,
+                risk_level: risk.level.clone(),
+                reason: risk.reason.clone(),
+                impact: risk.impact.clone(),
+                alternative: risk.alternative.clone(),
+                confirm_tx,
+            }).await;
 
-    /// safe 模式下 Medium 风险的简化确认
-    fn prompt_medium_risk_confirmation(&self, call: &ToolCall) -> Result<bool> {
-        println!(
-            "\n🟡 [safe 模式] 此操作会修改系统状态：{} {:?}",
-            call.tool, call.args
-        );
-        print!("确认执行？(yes/no) › ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Ok(input.trim().to_lowercase() == "yes")
-    }
-
-    /// 打印工具调用信息
-    fn print_tool_call_info(&self, step: usize, call: &ToolCall) {
-        let prefix = if call.dry_run { "[DRY-RUN] " } else { "" };
-        println!(
-            "\n🔧 Step {}: {}{}({})",
-            step,
-            prefix,
-            call.tool,
-            serde_json::to_string(&call.args).unwrap_or_default()
-        );
-    }
-
-    /// 打印工具结果摘要
-    fn print_tool_result_info(&self, result: &crate::types::tool::ToolResult) {
-        if let Some(preview) = &result.dry_run_preview {
-            println!("   📋 预览：{}", preview);
-        } else if result.success {
-            let preview = result.stdout.lines().next().unwrap_or("（无输出）");
-            println!("   ✅ 成功：{}", preview);
+            // 等待 UI 回应（用户关闭 TUI 时 confirm_rx 会返回 Err，视为取消）
+            Ok(confirm_rx.await.unwrap_or(false))
         } else {
-            println!(
-                "   ❌ 失败 (exit {})：{}",
-                result.exit_code,
-                result.stderr.lines().next().unwrap_or("")
-            );
+            // CLI fallback：使用 inquire
+            println!("\n{}", "═".repeat(60));
+            println!("⚠️   高风险操作 — 需要您确认");
+            println!("{}", "═".repeat(60));
+            println!("工具：{}", call.tool);
+            println!("参数：{}", serde_json::to_string_pretty(&call.args).unwrap_or_default());
+            println!("风险：{}", risk.reason);
+            println!("影响：{}", risk.impact);
+            if let Some(alt) = &risk.alternative {
+                println!("建议：{}", alt);
+            }
+            println!("{}", "═".repeat(60));
+            Confirm::new("确认执行此高风险操作？")
+                .with_default(false)
+                .prompt()
+                .map_err(|e| anyhow::anyhow!("输入错误: {}", e))
+        }
+    }
+
+    /// MEDIUM 风险确认（safe 模式）
+    async fn prompt_medium_risk_confirmation(&self, call: &ToolCall) -> Result<bool> {
+        if let Some(tx) = &self.tui_tx {
+            let (confirm_tx, confirm_rx) = oneshot::channel::<bool>();
+            let _ = tx.send(AgentEvent::RiskPrompt {
+                tool: call.tool.clone(),
+                command_preview: call.args["command"].as_str().unwrap_or("").to_string(),
+                risk_level: RiskLevel::Medium,
+                reason: "此操作会修改系统状态".to_string(),
+                impact: "操作通常可逆，safe 模式要求确认".to_string(),
+                alternative: None,
+                confirm_tx,
+            }).await;
+            Ok(confirm_rx.await.unwrap_or(false))
+        } else {
+            println!("\n🟡 [safe 模式] 此操作会修改系统状态：{} {:?}", call.tool, call.args);
+            Confirm::new("确认执行？")
+                .with_default(false)
+                .with_help_message("safe 模式要求 Medium 风险操作需确认")
+                .prompt()
+                .map_err(|e| anyhow::anyhow!("输入错误: {}", e))
+        }
+    }
+
+    /// 发送工具调用事件（TUI）/ 打印到终端（CLI）
+    async fn emit_tool_call(&self, step: usize, call: &ToolCall) {
+        let args = serde_json::to_string(&call.args).unwrap_or_default();
+        if self.tui_tx.is_some() {
+            self.emit(AgentEvent::ToolCall {
+                step,
+                tool: call.tool.clone(),
+                args,
+                dry_run: call.dry_run,
+            }).await;
+        } else {
+            let prefix = if call.dry_run { "[DRY-RUN] " } else { "" };
+            println!("\n🔧 Step {}: {}{}({})", step, prefix, call.tool, args);
+        }
+    }
+
+    /// 发送工具结果事件（TUI）/ 打印到终端（CLI）
+    async fn emit_tool_result(&self, result: &ToolResult) {
+        if self.tui_tx.is_some() {
+            if let Some(preview) = &result.dry_run_preview {
+                self.emit(AgentEvent::ToolResult {
+                    success: true,
+                    preview: format!("[DRY-RUN] {}", preview),
+                    duration_ms: result.duration_ms,
+                }).await;
+            } else {
+                let preview = if result.success {
+                    result.stdout.lines().next().unwrap_or("（无输出）").to_string()
+                } else {
+                    result.stderr.lines().next().unwrap_or("（执行失败）").to_string()
+                };
+                self.emit(AgentEvent::ToolResult {
+                    success: result.success,
+                    preview,
+                    duration_ms: result.duration_ms,
+                }).await;
+            }
+        } else {
+            // CLI 打印
+            if let Some(preview) = &result.dry_run_preview {
+                println!("   📋 预览：{}", preview);
+            } else if result.success {
+                let preview = result.stdout.lines().next().unwrap_or("（无输出）");
+                println!("   ✅ 成功：{}", preview);
+            } else {
+                println!("   ❌ 失败 (exit {})：{}", result.exit_code,
+                    result.stderr.lines().next().unwrap_or(""));
+            }
         }
     }
 
@@ -281,7 +481,7 @@ impl AgentLoop {
 
         match call.tool.as_str() {
             "shell.exec" => self.generate_shell_rollback(call),
-            "file.write" => self.generate_file_write_rollback(call),
+            "file.write" => self.generate_file_write_rollback_with_result(call, result),
             _ => None, // 只读操作无需回滚
         }
     }
@@ -371,14 +571,26 @@ impl AgentLoop {
         parts.last().map(|s| s.to_string())
     }
 
-    /// 为 file.write 生成回滚方案（需要知道原内容）
-    fn generate_file_write_rollback(&self, call: &ToolCall) -> Option<RollbackPlan> {
+    /// 为 file.write 生成回滚方案（从 ToolResult 中提取备份路径）
+    fn generate_file_write_rollback_with_result(&self, call: &ToolCall, result: &ToolResult) -> Option<RollbackPlan> {
         let path = call.args["path"].as_str()?;
-        Some(RollbackPlan {
-            description: format!("恢复文件 {} 的原始内容（需要备份）", path),
-            commands: vec![], // 实际回滚需要先备份原内容，暂不支持自动回滚
-            has_side_effects: true,
-        })
+        // 从 stdout 中解析备份路径标记 [BACKUP:/tmp/...]
+        let backup_path = result.stdout.lines().find_map(|line| {
+            line.strip_prefix("[BACKUP:").and_then(|s| s.strip_suffix(']')).map(str::to_string)
+        });
+
+        match backup_path {
+            Some(bak) => Some(RollbackPlan {
+                description: format!("从备份恢复文件 {}", path),
+                commands: vec![format!("cp '{}' '{}'", bak, path)],
+                has_side_effects: false,
+            }),
+            None => Some(RollbackPlan {
+                description: format!("文件 {} 写入前无备份，无法自动回滚", path),
+                commands: vec![],
+                has_side_effects: true,
+            }),
+        }
     }
 
     /// 格式化工具结果为 LLM 可读文本

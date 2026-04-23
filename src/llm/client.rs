@@ -1,8 +1,12 @@
 use crate::config::{LlmConfig, LlmProviderKind};
+use crate::tools::{
+    from_openai_tool_name, is_valid_openai_tool_name, to_openai_tool_name,
+};
 use crate::types::tool::ToolCall;
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde_json::json;
+use std::collections::HashMap;
 
 pub struct LlmClient {
     client: Client,
@@ -75,7 +79,6 @@ impl LlmClient {
             .await
             .context("Anthropic API 响应解析失败")?;
 
-        // 检查 API 错误
         if let Some(err_type) = resp.get("type").and_then(|t| t.as_str()) {
             if err_type == "error" {
                 let msg = resp["error"]["message"].as_str().unwrap_or("未知错误");
@@ -93,11 +96,9 @@ impl LlmClient {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> Result<LlmResponse> {
-        // 将 Anthropic 格式的 messages 转换为 OpenAI 格式
-        let openai_messages = self.convert_messages_to_openai(system_prompt, messages);
-
-        // 将 Anthropic 格式的 tools 转换为 OpenAI 格式
-        let openai_tools = self.convert_tools_to_openai(tools);
+        let tool_name_map = self.build_openai_tool_name_map(tools)?;
+        let openai_messages = self.convert_messages_to_openai(system_prompt, messages, &tool_name_map)?;
+        let openai_tools = self.convert_tools_to_openai(tools, &tool_name_map)?;
 
         let payload = json!({
             "model": self.config.model,
@@ -119,13 +120,45 @@ impl LlmClient {
             .await
             .context("OpenAI-compatible API 响应解析失败")?;
 
-        // 检查 API 错误
         if let Some(err_obj) = resp.get("error") {
             let msg = err_obj["message"].as_str().unwrap_or("未知错误");
             return Err(anyhow::anyhow!("OpenAI-compatible API 错误: {}", msg));
         }
 
-        self.parse_openai_response(resp)
+        self.parse_openai_response(resp, &tool_name_map)
+    }
+
+    fn build_openai_tool_name_map(
+        &self,
+        tools: &[serde_json::Value],
+    ) -> Result<HashMap<String, String>> {
+        let mut name_map = HashMap::with_capacity(tools.len());
+
+        for tool in tools {
+            let internal_name = tool["name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("工具 schema 缺少 name 字段"))?;
+            let openai_name = to_openai_tool_name(internal_name);
+
+            if !is_valid_openai_tool_name(&openai_name) {
+                return Err(anyhow::anyhow!(
+                    "工具名转换后仍不合法: {} -> {}",
+                    internal_name,
+                    openai_name
+                ));
+            }
+
+            if let Some(existing) = name_map.insert(openai_name.clone(), internal_name.to_string()) {
+                return Err(anyhow::anyhow!(
+                    "OpenAI-compatible 工具名冲突: {} 同时映射到 {} 和 {}",
+                    openai_name,
+                    existing,
+                    internal_name
+                ));
+            }
+        }
+
+        Ok(name_map)
     }
 
     /// 将 Anthropic 格式 messages 转换为 OpenAI 格式
@@ -133,8 +166,8 @@ impl LlmClient {
         &self,
         system_prompt: &str,
         messages: &[serde_json::Value],
-    ) -> Vec<serde_json::Value> {
-        // 预分配容量：system + 所有消息
+        tool_name_map: &HashMap<String, String>,
+    ) -> Result<Vec<serde_json::Value>> {
         let mut openai_messages = Vec::with_capacity(messages.len() + 1);
         openai_messages.push(json!({
             "role": "system",
@@ -148,24 +181,57 @@ impl LlmClient {
                 "user" => {
                     if let Some(content) = msg.get("content") {
                         if let Some(content_arr) = content.as_array() {
-                            // 单次遍历：找 tool_result 或 text
-                            let mut tool_result_found = false;
+                            let mut tool_result_block: Option<&serde_json::Value> = None;
+                            let mut text_blocks: Vec<&serde_json::Value> = Vec::new();
+                            let mut image_blocks: Vec<&serde_json::Value> = Vec::new();
+
                             for block in content_arr {
-                                if block["type"] == "tool_result" {
-                                    let tool_use_id = block["tool_use_id"].as_str().unwrap_or("");
-                                    let content_text = block["content"].as_str().unwrap_or("");
-                                    openai_messages.push(json!({
-                                        "role": "tool",
-                                        "tool_call_id": tool_use_id,
-                                        "content": content_text
-                                    }));
-                                    tool_result_found = true;
-                                    break;
+                                match block["type"].as_str() {
+                                    Some("tool_result") => {
+                                        tool_result_block = Some(block);
+                                        break;
+                                    }
+                                    Some("text") => text_blocks.push(block),
+                                    Some("image") => image_blocks.push(block),
+                                    _ => {}
                                 }
                             }
-                            if !tool_result_found {
-                                let text = content_arr.iter()
-                                    .find(|b| b["type"] == "text")
+
+                            if let Some(block) = tool_result_block {
+                                openai_messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": block["tool_use_id"].as_str().unwrap_or(""),
+                                    "content": block["content"].as_str().unwrap_or("")
+                                }));
+                            } else if !image_blocks.is_empty() {
+                                let mut openai_content: Vec<serde_json::Value> = Vec::new();
+
+                                for block in &text_blocks {
+                                    openai_content.push(json!({
+                                        "type": "text",
+                                        "text": block["text"].as_str().unwrap_or("")
+                                    }));
+                                }
+
+                                for block in &image_blocks {
+                                    let source = &block["source"];
+                                    openai_content.push(json!({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": format!("data:{};base64,{}",
+                                                source["media_type"].as_str().unwrap_or("image/png"),
+                                                source["data"].as_str().unwrap_or(""))
+                                        }
+                                    }));
+                                }
+
+                                openai_messages.push(json!({
+                                    "role": "user",
+                                    "content": openai_content
+                                }));
+                            } else {
+                                let text = text_blocks
+                                    .first()
                                     .and_then(|b| b["text"].as_str())
                                     .unwrap_or("");
                                 openai_messages.push(json!({
@@ -184,18 +250,19 @@ impl LlmClient {
                 "assistant" => {
                     if let Some(content) = msg.get("content") {
                         if let Some(content_arr) = content.as_array() {
-                            // 单次遍历收集 text 和 tool_calls
                             let mut text = "";
                             let mut tool_calls = Vec::new();
                             for block in content_arr {
                                 match block["type"].as_str() {
                                     Some("text") => text = block["text"].as_str().unwrap_or(""),
                                     Some("tool_use") => {
+                                        let tool_name = block["name"].as_str().unwrap_or("");
+                                        let openai_name = self.resolve_openai_tool_name(tool_name, tool_name_map)?;
                                         tool_calls.push(json!({
                                             "id": block["id"],
                                             "type": "function",
                                             "function": {
-                                                "name": block["name"],
+                                                "name": openai_name,
                                                 "arguments": serde_json::to_string(&block["input"]).unwrap_or_default()
                                             }
                                         }));
@@ -224,19 +291,49 @@ impl LlmClient {
             }
         }
 
-        openai_messages
+        Ok(openai_messages)
     }
 
     /// 将 Anthropic 格式 tools 转换为 OpenAI 格式
-    fn convert_tools_to_openai(&self, tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
-        tools.iter().map(|t| json!({
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"]
-            }
-        })).collect()
+    fn convert_tools_to_openai(
+        &self,
+        tools: &[serde_json::Value],
+        tool_name_map: &HashMap<String, String>,
+    ) -> Result<Vec<serde_json::Value>> {
+        tools.iter()
+            .map(|tool| {
+                let original_name = tool["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("工具 schema 缺少 name 字段"))?;
+                let openai_name = self.resolve_openai_tool_name(original_name, tool_name_map)?;
+                Ok(json!({
+                    "type": "function",
+                    "function": {
+                        "name": openai_name,
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"]
+                    }
+                }))
+            })
+            .collect()
+    }
+
+    fn resolve_openai_tool_name(
+        &self,
+        internal_name: &str,
+        tool_name_map: &HashMap<String, String>,
+    ) -> Result<String> {
+        let openai_name = to_openai_tool_name(internal_name);
+        match tool_name_map.get(&openai_name) {
+            Some(mapped_name) if mapped_name == internal_name => Ok(openai_name),
+            Some(mapped_name) => Err(anyhow::anyhow!(
+                "工具名映射不一致: {} -> {}，但注册表记录为 {}",
+                internal_name,
+                openai_name,
+                mapped_name
+            )),
+            None => Err(anyhow::anyhow!("未找到工具名映射: {}", internal_name)),
+        }
     }
 
     /// 解析 Anthropic 响应
@@ -279,20 +376,26 @@ impl LlmClient {
     }
 
     /// 解析 OpenAI-compatible 响应
-    fn parse_openai_response(&self, resp: serde_json::Value) -> Result<LlmResponse> {
+    fn parse_openai_response(
+        &self,
+        resp: serde_json::Value,
+        tool_name_map: &HashMap<String, String>,
+    ) -> Result<LlmResponse> {
         let choices = resp["choices"].as_array().cloned().unwrap_or_default();
 
         if let Some(choice) = choices.first() {
             let message = &choice["message"];
 
-            // 检查是否有 tool_calls
             if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
                 if let Some(tool_call) = tool_calls.first() {
                     let tool_use_id = tool_call["id"].as_str().unwrap_or("").to_string();
                     let function = &tool_call["function"];
-                    let tool_name = function["name"].as_str().unwrap_or("").to_string();
+                    let openai_name = function["name"].as_str().unwrap_or("").to_string();
+                    let tool_name = tool_name_map
+                        .get(&openai_name)
+                        .cloned()
+                        .unwrap_or_else(|| from_openai_tool_name(&openai_name));
 
-                    // 解析 arguments JSON 字符串
                     let args_str = function["arguments"].as_str().unwrap_or("{}");
                     let tool_input = serde_json::from_str::<serde_json::Value>(args_str)
                         .map_err(|e| anyhow::anyhow!("tool arguments JSON 解析失败: {}", e))?;
@@ -304,7 +407,6 @@ impl LlmClient {
                         dry_run: false,
                     };
 
-                    // 构建 assistant_content 供 memory 使用（转换为 Anthropic 格式）
                     let assistant_content = vec![
                         json!({
                             "type": "text",
@@ -326,7 +428,6 @@ impl LlmClient {
                 }
             }
 
-            // 纯文本回复
             let text = message["content"].as_str().unwrap_or("操作完成").to_string();
             return Ok(LlmResponse::FinalAnswer(text));
         }

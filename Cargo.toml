@@ -36,9 +36,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
 
-# REPL
+# REPL (CLI fallback 模式保留)
 rustyline = "12"
+
+# TUI (交互式选择菜单，CLI fallback 用)
+inquire = "0.7"
+
+# ratatui TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+unicode-width = "0.2"
 
 # Async trait support
 async-trait = "0.1"

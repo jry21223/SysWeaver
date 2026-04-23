@@ -1,6 +1,7 @@
+use crate::image::ImageInfo;
 use crate::types::tool::{OperationRecord, Playbook, RollbackPlan, ToolCall, ToolResult};
 use chrono::{DateTime, Utc};
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// 会话记忆：保存对话历史（Claude API 格式）和操作记录
@@ -75,6 +76,41 @@ impl Memory {
         }));
     }
 
+    /// 添加用户消息（支持图片内容）
+    /// Anthropic API 格式：content 为数组，包含 text 和 image blocks
+    pub fn push_user_message_with_images(&mut self, text: &str, images: &[ImageInfo]) {
+        let content = if images.is_empty() {
+            // 无图片：简单文本消息
+            serde_json::json!(text)
+        } else {
+            // 有图片：构建 content 数组
+            let mut blocks: Vec<serde_json::Value> = vec![
+                serde_json::json!({
+                    "type": "text",
+                    "text": text
+                })
+            ];
+
+            for img in images {
+                blocks.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.base64_data
+                    }
+                }));
+            }
+
+            serde_json::json!(blocks)
+        };
+
+        self.push_raw_message(serde_json::json!({
+            "role": "user",
+            "content": content
+        }));
+    }
+
     /// 添加助手文本回复
     pub fn push_assistant_text(&mut self, text: &str) {
         self.push_raw_message(serde_json::json!({
@@ -99,15 +135,100 @@ impl Memory {
     /// 直接推入原始 Claude API 格式消息
     pub fn push_raw_message(&mut self, msg: serde_json::Value) {
         self.messages.push(msg);
-        // 超出窗口时成对删除：移除最老的 user+assistant 对，保持角色交替不破坏 tool_use 配对
+        self.trim_to_max_messages();
+    }
+
+    fn trim_to_max_messages(&mut self) {
         while self.messages.len() > self.max_messages {
-            if self.messages.len() >= 2 {
-                // 删除最老的两条（通常是 user + assistant 对）
-                self.messages.drain(..2);
-            } else {
-                self.messages.remove(0);
+            let Some(remove_count) = self.oldest_complete_segment_len() else {
+                break;
+            };
+            self.messages.drain(..remove_count);
+        }
+    }
+
+    fn oldest_complete_segment_len(&self) -> Option<usize> {
+        let first = self.messages.first()?;
+
+        if self.is_top_level_user_message(first) {
+            return self.next_top_level_user_index(1).or_else(|| {
+                self.turn_is_complete(0, self.messages.len())
+                    .then_some(self.messages.len())
+            });
+        }
+
+        if self.message_has_tool_use(first) || self.message_is_tool_result(first) {
+            return None;
+        }
+
+        Some(1)
+    }
+
+    fn next_top_level_user_index(&self, start: usize) -> Option<usize> {
+        self.messages
+            .iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, msg)| self.is_top_level_user_message(msg))
+            .map(|(index, _)| index)
+    }
+
+    fn turn_is_complete(&self, start: usize, end: usize) -> bool {
+        let segment = &self.messages[start..end];
+        let mut pending_tool_uses: Vec<String> = Vec::new();
+
+        for msg in segment {
+            if self.message_has_tool_use(msg) {
+                pending_tool_uses.extend(self.tool_use_ids(msg));
+            }
+
+            if let Some(result_ids) = self.tool_result_ids(msg) {
+                for tool_use_id in result_ids {
+                    if let Some(position) = pending_tool_uses.iter().position(|id| id == &tool_use_id) {
+                        pending_tool_uses.remove(position);
+                    } else {
+                        return false;
+                    }
+                }
             }
         }
+
+        pending_tool_uses.is_empty()
+    }
+
+    fn is_top_level_user_message(&self, msg: &Value) -> bool {
+        msg["role"] == "user" && !self.message_is_tool_result(msg)
+    }
+
+    fn message_has_tool_use(&self, msg: &Value) -> bool {
+        !self.tool_use_ids(msg).is_empty()
+    }
+
+    fn tool_use_ids(&self, msg: &Value) -> Vec<String> {
+        msg.get("content")
+            .and_then(|content| content.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|block| block["type"] == "tool_use")
+            .filter_map(|block| block["id"].as_str().map(ToString::to_string))
+            .collect()
+    }
+
+    fn tool_result_ids(&self, msg: &Value) -> Option<Vec<String>> {
+        let ids: Vec<String> = msg
+            .get("content")
+            .and_then(|content| content.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|block| block["type"] == "tool_result")
+            .filter_map(|block| block["tool_use_id"].as_str().map(ToString::to_string))
+            .collect();
+
+        (!ids.is_empty()).then_some(ids)
+    }
+
+    fn message_is_tool_result(&self, msg: &Value) -> bool {
+        self.tool_result_ids(msg).is_some()
     }
 
     /// 记录一次操作（含 Undo 方案）
@@ -186,16 +307,10 @@ impl Memory {
         // 3. 合并连续的同类操作摘要
         self.merge_repeated_operations();
 
-        // 4. 如果仍然过长，删除最老的消息对
-        while self.messages.len() > self.max_messages {
-            if self.messages.len() >= 2 {
-                self.messages.drain(..2);
-                self.compression_stats.snip_count += 2;
-            } else {
-                self.messages.remove(0);
-                self.compression_stats.snip_count += 1;
-            }
-        }
+        // 4. 如果仍然过长，删除最老的消息
+        let before_trim = self.messages.len();
+        self.trim_to_max_messages();
+        self.compression_stats.snip_count += before_trim.saturating_sub(self.messages.len());
 
         // 更新节省的 token 估算
         let saved = original_len - self.messages.len();
@@ -325,7 +440,7 @@ impl Memory {
         }
     }
 
-    /// 获取压缩统计（用于调试）
+    #[allow(dead_code)] // 调试工具，供未来 /stats 命令使用
     pub fn get_compression_stats(&self) -> &CompressionStats {
         &self.compression_stats
     }

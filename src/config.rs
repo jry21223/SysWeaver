@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -34,79 +34,183 @@ impl std::str::FromStr for LlmProviderKind {
 #[derive(Debug, Clone)]
 pub struct ProviderPreset {
     pub name: String,
+    pub display_name: String,
     pub provider_kind: LlmProviderKind,
     pub base_url: String,
     pub default_model: String,
-    pub env_key_name: String,
+    pub suggested_env_keys: Vec<String>,
+    pub aliases: Vec<String>,
+    #[allow(dead_code)] // Reserved for future UI that guides users to fill in custom values
+    pub requires_custom_base_url: bool,
+    #[allow(dead_code)] // Reserved for future UI that guides users to fill in custom values
+    pub requires_custom_model: bool,
     pub description: String,
+}
+
+impl ProviderPreset {
+    pub fn matches_query(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+
+        self.name.to_lowercase().contains(&q)
+            || self.display_name.to_lowercase().contains(&q)
+            || self.description.to_lowercase().contains(&q)
+            || self.aliases.iter().any(|alias| alias.to_lowercase().contains(&q))
+    }
+
+    pub fn primary_env_key(&self) -> &str {
+        self.suggested_env_keys
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("AGENT_UNIX_LLM_API_KEY")
+    }
+}
+
+fn preset(
+    name: &str,
+    display_name: &str,
+    provider_kind: LlmProviderKind,
+    base_url: &str,
+    default_model: &str,
+    suggested_env_keys: &[&str],
+    aliases: &[&str],
+    description: &str,
+) -> ProviderPreset {
+    ProviderPreset {
+        name: name.to_string(),
+        display_name: display_name.to_string(),
+        provider_kind,
+        base_url: base_url.to_string(),
+        default_model: default_model.to_string(),
+        suggested_env_keys: suggested_env_keys.iter().map(|s| s.to_string()).collect(),
+        aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        requires_custom_base_url: base_url.is_empty(),
+        requires_custom_model: default_model.is_empty(),
+        description: description.to_string(),
+    }
 }
 
 /// 所有支持的 Provider 预设
 pub fn get_provider_presets() -> Vec<ProviderPreset> {
     vec![
-        ProviderPreset {
-            name: "anthropic".to_string(),
-            provider_kind: LlmProviderKind::Anthropic,
-            base_url: "https://api.anthropic.com".to_string(),
-            default_model: "claude-sonnet-4-5".to_string(),
-            env_key_name: "ANTHROPIC_API_KEY".to_string(),
-            description: "Anthropic Claude（原生 tool_use 支持）".to_string(),
-        },
-        ProviderPreset {
-            name: "openai".to_string(),
-            provider_kind: LlmProviderKind::OpenAiCompatible,
-            base_url: "https://api.openai.com".to_string(),
-            default_model: "gpt-4o".to_string(),
-            env_key_name: "OPENAI_API_KEY".to_string(),
-            description: "OpenAI GPT 系列".to_string(),
-        },
-        ProviderPreset {
-            name: "openrouter".to_string(),
-            provider_kind: LlmProviderKind::OpenAiCompatible,
-            base_url: "https://openrouter.ai/api".to_string(),
-            default_model: "openai/gpt-4o".to_string(),
-            env_key_name: "OPENROUTER_API_KEY".to_string(),
-            description: "OpenRouter（多模型聚合）".to_string(),
-        },
-        ProviderPreset {
-            name: "groq".to_string(),
-            provider_kind: LlmProviderKind::OpenAiCompatible,
-            base_url: "https://api.groq.com".to_string(),
-            default_model: "llama-3.3-70b-versatile".to_string(),
-            env_key_name: "GROQ_API_KEY".to_string(),
-            description: "Groq（超快推理）".to_string(),
-        },
-        ProviderPreset {
-            name: "deepseek".to_string(),
-            provider_kind: LlmProviderKind::OpenAiCompatible,
-            base_url: "https://api.deepseek.com".to_string(),
-            default_model: "deepseek-chat".to_string(),
-            env_key_name: "DEEPSEEK_API_KEY".to_string(),
-            description: "DeepSeek（国产大模型）".to_string(),
-        },
-        ProviderPreset {
-            name: "custom".to_string(),
-            provider_kind: LlmProviderKind::OpenAiCompatible,
-            base_url: "".to_string(), // 需要用户指定
-            default_model: "".to_string(), // 需要用户指定
-            env_key_name: "AGENT_UNIX_LLM_API_KEY".to_string(),
-            description: "自定义 OpenAI-compatible 端点".to_string(),
-        },
+        preset(
+            "anthropic",
+            "Anthropic",
+            LlmProviderKind::Anthropic,
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+            &["ANTHROPIC_API_KEY"],
+            &["claude"],
+            "Claude（原生 tool_use 支持）",
+        ),
+        preset(
+            "openai",
+            "OpenAI",
+            LlmProviderKind::OpenAiCompatible,
+            "https://api.openai.com",
+            "gpt-4o",
+            &["OPENAI_API_KEY"],
+            &["gpt"],
+            "OpenAI GPT 系列",
+        ),
+        preset(
+            "openrouter",
+            "OpenRouter",
+            LlmProviderKind::OpenAiCompatible,
+            "https://openrouter.ai/api",
+            "openai/gpt-4o",
+            &["OPENROUTER_API_KEY"],
+            &["router"],
+            "OpenRouter（多模型聚合）",
+        ),
+        preset(
+            "groq",
+            "Groq",
+            LlmProviderKind::OpenAiCompatible,
+            "https://api.groq.com/openai",
+            "llama-3.3-70b-versatile",
+            &["GROQ_API_KEY"],
+            &["llama"],
+            "Groq（超快推理）",
+        ),
+        preset(
+            "glm",
+            "GLM",
+            LlmProviderKind::OpenAiCompatible,
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.5",
+            &["GLM_API_KEY", "BIGMODEL_API_KEY"],
+            &["zhipu", "bigmodel", "智谱"],
+            "智谱 GLM（OpenAI-compatible）",
+        ),
+        preset(
+            "kimi",
+            "Kimi",
+            LlmProviderKind::OpenAiCompatible,
+            "https://api.moonshot.cn/v1",
+            "moonshot-v1-128k",
+            &["KIMI_API_KEY", "MOONSHOT_API_KEY"],
+            &["moonshot", "月之暗面"],
+            "Moonshot Kimi（长上下文）",
+        ),
+        preset(
+            "deepseek",
+            "DeepSeek",
+            LlmProviderKind::OpenAiCompatible,
+            "https://api.deepseek.com",
+            "deepseek-chat",
+            &["DEEPSEEK_API_KEY"],
+            &["ds"],
+            "DeepSeek（国产大模型）",
+        ),
+        preset(
+            "minimax",
+            "MiniMax",
+            LlmProviderKind::OpenAiCompatible,
+            "https://api.minimaxi.com/v1",
+            "MiniMax-M1",
+            &["MINIMAX_API_KEY"],
+            &["abab", "海螺"],
+            "MiniMax（国产模型）",
+        ),
+        preset(
+            "bailian",
+            "Bailian",
+            LlmProviderKind::OpenAiCompatible,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "qwen-coding-plus",
+            &["BAILIAN_API_KEY", "DASHSCOPE_API_KEY"],
+            &["qwen", "qwen-coding-plan", "codingplan", "百炼", "dashscope"],
+            "阿里云百炼（Qwen Coding）",
+        ),
+        preset(
+            "custom",
+            "Custom",
+            LlmProviderKind::OpenAiCompatible,
+            "",
+            "",
+            &["AGENT_UNIX_LLM_API_KEY"],
+            &["self-hosted", "proxy"],
+            "自定义 OpenAI-compatible 端点",
+        ),
     ]
 }
 
 /// 查找预设 Provider
 pub fn find_preset(name: &str) -> Option<ProviderPreset> {
-    get_provider_presets()
-        .iter()
-        .find(|p| p.name == name.to_lowercase())
-        .cloned()
+    let target = name.to_lowercase();
+    get_provider_presets().into_iter().find(|p| {
+        p.name == target || p.aliases.iter().any(|alias| alias.to_lowercase() == target)
+    })
 }
 
 /// 用户配置文件结构
 #[derive(Debug, Clone, serde::Deserialize)]
 struct UserConfigFile {
     provider: String,
+    provider_preset: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
     api_key: Option<String>,
@@ -150,12 +254,12 @@ impl fmt::Debug for LlmConfig {
     }
 }
 
-fn validate_base_url(url_str: &str) -> Result<String> {
+pub fn validate_base_url(url_str: &str) -> Result<String> {
     if url_str.is_empty() {
         return Err(anyhow!("Base URL 不能为空"));
     }
-    if !url_str.starts_with("https://") && !url_str.starts_with("http://") {
-        return Err(anyhow!("Base URL 必须使用 HTTP/HTTPS 协议"));
+    if !url_str.starts_with("https://") {
+        return Err(anyhow!("Base URL 必须使用 HTTPS 协议"));
     }
     if url_str.contains('@') && url_str.contains(':') {
         return Err(anyhow!("Base URL 不能包含嵌入的凭证"));
@@ -163,13 +267,13 @@ fn validate_base_url(url_str: &str) -> Result<String> {
     Ok(url_str.trim_end_matches('/').to_string())
 }
 
-fn validate_model(model_str: &str) -> Result<String> {
+pub fn validate_model(model_str: &str) -> Result<String> {
     if model_str.is_empty() {
         return Err(anyhow!("Model ID 不能为空"));
     }
-    let valid_chars = model_str.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/'
-    });
+    let valid_chars = model_str
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/');
     if !valid_chars {
         return Err(anyhow!("Model ID 包含无效字符"));
     }
@@ -188,26 +292,20 @@ impl LlmConfig {
         base_url_cli: Option<&str>,
         api_key_cli: Option<&str>,
     ) -> Result<Self> {
-        // 0. 尝试从配置文件加载
         let user_config = load_user_config_file();
         let env_provider = std::env::var("AGENT_UNIX_LLM_PROVIDER").ok();
 
-        // 1. 查找预设并获取配置
         let provider_str = provider_cli
+            .or_else(|| user_config.as_ref().and_then(|c| c.provider_preset.as_deref()))
             .or_else(|| user_config.as_ref().map(|c| c.provider.as_str()))
             .or_else(|| env_provider.as_deref());
 
-        let (provider_kind, preset_base_url, preset_model, preset_env_key) = {
-            let preset = provider_str.and_then(|p| find_preset(p));
+        let preset = provider_str.and_then(find_preset);
+        let provider_kind = preset
+            .as_ref()
+            .map(|p| p.provider_kind)
+            .unwrap_or(LlmProviderKind::Anthropic);
 
-            if let Some(p) = preset {
-                (p.provider_kind, Some(p.base_url), Some(p.default_model), Some(p.env_key_name))
-            } else {
-                (LlmProviderKind::Anthropic, None, None, None)
-            }
-        };
-
-        // 2. 确定 base URL
         let base_url = if let Some(url) = base_url_cli {
             validate_base_url(url)?
         } else if let Ok(url) = std::env::var("AGENT_UNIX_LLM_BASE_URL") {
@@ -215,18 +313,25 @@ impl LlmConfig {
         } else if let Some(ref config) = user_config {
             if let Some(url) = &config.base_url {
                 validate_base_url(url)?
-            } else if let Some(url) = preset_base_url {
-                url
+            } else if let Some(p) = &preset {
+                if p.base_url.is_empty() {
+                    "https://api.anthropic.com".to_string()
+                } else {
+                    p.base_url.clone()
+                }
             } else {
                 "https://api.anthropic.com".to_string()
             }
-        } else if let Some(url) = preset_base_url {
-            url
+        } else if let Some(p) = &preset {
+            if p.base_url.is_empty() {
+                "https://api.anthropic.com".to_string()
+            } else {
+                p.base_url.clone()
+            }
         } else {
             "https://api.anthropic.com".to_string()
         };
 
-        // 3. 确定 model
         let model = if let Some(m) = model_cli {
             validate_model(m)?
         } else if let Ok(m) = std::env::var("AGENT_UNIX_LLM_MODEL") {
@@ -234,20 +339,25 @@ impl LlmConfig {
         } else if let Some(ref config) = user_config {
             if let Some(m) = &config.model {
                 validate_model(m)?
+            } else if let Some(p) = &preset {
+                if p.default_model.is_empty() {
+                    default_model_for(provider_kind)
+                } else {
+                    validate_model(&p.default_model)?
+                }
             } else {
                 default_model_for(provider_kind)
             }
-        } else if let Some(m) = preset_model {
-            if m.is_empty() {
+        } else if let Some(p) = &preset {
+            if p.default_model.is_empty() {
                 default_model_for(provider_kind)
             } else {
-                m
+                validate_model(&p.default_model)?
             }
         } else {
             default_model_for(provider_kind)
         };
 
-        // 4. 确定 API key
         let api_key = if let Some(key) = api_key_cli {
             key.to_string()
         } else if let Ok(key) = std::env::var("AGENT_UNIX_LLM_API_KEY") {
@@ -256,19 +366,12 @@ impl LlmConfig {
             if let Some(key) = &config.api_key {
                 key.clone()
             } else {
-                get_fallback_api_key(provider_kind, preset_env_key.as_deref())?
-            }
-        } else if let Some(env_key) = preset_env_key {
-            if let Ok(key) = std::env::var(&env_key) {
-                key
-            } else {
-                get_fallback_api_key(provider_kind, Some(&env_key))?
+                get_fallback_api_key(provider_kind, preset.as_ref())?
             }
         } else {
-            get_fallback_api_key(provider_kind, None)?
+            get_fallback_api_key(provider_kind, preset.as_ref())?
         };
 
-        // 5. Claude 模型限制
         if model.to_lowercase().contains("claude") && provider_kind != LlmProviderKind::Anthropic {
             return Err(anyhow!(
                 "Claude 模型必须使用 anthropic provider\n提示：使用 --provider anthropic"
@@ -295,7 +398,7 @@ impl LlmConfig {
         format!("{}/v1/chat/completions", self.base_url)
     }
 
-    /// 显示配置摘要
+    #[allow(dead_code)]
     pub fn display_summary(&self) -> String {
         format!(
             "Provider: {}\nBase URL: {}\nModel: {}\nAPI Key: {}...",
@@ -315,20 +418,23 @@ fn default_model_for(provider_kind: LlmProviderKind) -> String {
     }
 }
 
-fn get_fallback_api_key(provider_kind: LlmProviderKind, preset_env_key: Option<&str>) -> Result<String> {
-    // 优先使用预设的环境变量名
-    if let Some(env_key) = preset_env_key {
-        if let Ok(key) = std::env::var(env_key) {
-            return Ok(key);
+fn get_fallback_api_key(
+    provider_kind: LlmProviderKind,
+    preset: Option<&ProviderPreset>,
+) -> Result<String> {
+    if let Some(preset) = preset {
+        for env_key in &preset.suggested_env_keys {
+            if let Ok(key) = std::env::var(env_key) {
+                return Ok(key);
+            }
         }
     }
 
-    // 然后根据 provider 类型尝试官方变量
     if provider_kind == LlmProviderKind::Anthropic {
         std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow!("请设置 ANTHROPIC_API_KEY 或运行 'agent-unix config --setup'"))
     } else {
         std::env::var("OPENAI_API_KEY")
-            .map_err(|_| anyhow!("请设置 OPENAI_API_KEY 或运行 'agent-unix config --setup'"))
+            .map_err(|_| anyhow!("请设置对应 provider 的 API Key，或运行 'agent-unix config --setup'"))
     }
 }

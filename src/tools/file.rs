@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
+use chrono;
 
 use super::Tool;
 use crate::types::tool::ToolResult;
@@ -221,6 +222,24 @@ impl Tool for FileWriteTool {
                 .map_err(|e| anyhow::anyhow!("创建目录失败: {}", e))?;
         }
 
+        // 覆盖写时，先备份原文件（供 Undo 使用）
+        let backup_path = if mode != "append" && tokio::fs::metadata(&path).await.is_ok() {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            path.hash(&mut h);
+            chrono::Utc::now().timestamp_millis().hash(&mut h);
+            let hash = h.finish();
+            let bak = format!("/tmp/.agent-unix-bak-{:x}", hash);
+            if tokio::fs::copy(&path, &bak).await.is_ok() {
+                Some(bak)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if mode == "append" {
             use tokio::io::AsyncWriteExt;
             let mut file = tokio::fs::OpenOptions::new()
@@ -238,16 +257,20 @@ impl Tool for FileWriteTool {
                 .map_err(|e| anyhow::anyhow!("写入文件失败 {}: {}", path, e))?;
         }
 
-        Ok(ToolResult::success(
-            self.name(),
-            &format!(
+        let summary = match &backup_path {
+            Some(bak) => format!(
+                "已覆盖写入 {} 字节到 {}\n[BACKUP:{}]",
+                content.len(), path, bak
+            ),
+            None => format!(
                 "已{}写入 {} 字节到 {}",
                 if mode == "append" { "追加" } else { "覆盖" },
                 content.len(),
                 path
             ),
-            0,
-        ))
+        };
+
+        Ok(ToolResult::success(self.name(), &summary, 0))
     }
 }
 
