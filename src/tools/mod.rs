@@ -1,4 +1,6 @@
 pub mod file;
+pub mod log;
+pub mod net;
 pub mod process;
 pub mod service;
 pub mod shell;
@@ -67,6 +69,8 @@ impl ToolManager {
                 Box::new(process::ProcessTool::new()),
                 Box::new(service::ServiceTool::new()),
                 Box::new(user::UserTool::new()),
+                Box::new(log::LogTailTool::new()),
+                Box::new(net::NetCheckTool::new()),
             ],
             ssh: None,
         }
