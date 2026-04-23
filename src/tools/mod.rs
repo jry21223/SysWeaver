@@ -1,5 +1,6 @@
 pub mod cron;
 pub mod file;
+pub mod health;
 pub mod log;
 pub mod net;
 pub mod package;
@@ -75,6 +76,7 @@ impl ToolManager {
                 Box::new(net::NetCheckTool::new()),
                 Box::new(package::PackageTool::new()),
                 Box::new(cron::CronTool::new()),
+                Box::new(health::HealthCheckTool::new()),
             ],
             ssh: None,
         }

@@ -575,6 +575,11 @@ async fn run_chat_loop(
                     handle_report_inline(Some((session_summary, total, success))).await;
                     continue;
                 }
+                if input.starts_with("/export") {
+                    let path_hint = input.strip_prefix("/export").map(str::trim).filter(|s| !s.is_empty());
+                    handle_export_inline(&agent, path_hint).await;
+                    continue;
+                }
 
                 let prepared_input = image_processor.prepare_user_input(&iterm2_detector, input);
                 let clean_input = prepared_input.clean_input;
@@ -1059,6 +1064,7 @@ fn print_help_message() {
     println!("   /history  查看操作历史（最近 10 步）");
     println!("   /summary  AI 生成本次会话的自然语言操作总结");
     println!("   /report   生成系统健康综合报告（含会话操作摘要）");
+    println!("   /export [文件路径]  导出会话记录为 Markdown 报告");
     println!("   /undo     撤销上一步操作");
     println!("   /clear    清除对话上下文，重新开始");
     println!("   /playbook list          列出 Playbook");
@@ -1133,6 +1139,65 @@ async fn handle_report_inline(session_info: Option<(String, usize, usize)>) {
         }
     }
     println!("╚══════════════════════════════════════════════════════╝\n");
+}
+
+async fn handle_export_inline(agent: &AgentLoop, path_hint: Option<&str>) {
+    use chrono::Local;
+    use std::fs;
+
+    let ts = Local::now();
+    let default_name = format!("jij-session-{}.md", ts.format("%Y%m%d-%H%M%S"));
+    let path = path_hint.unwrap_or(&default_name);
+
+    let mut md = String::new();
+    md.push_str(&format!("# jij 会话报告\n\n"));
+    md.push_str(&format!("**导出时间：** {}\n\n", ts.format("%Y-%m-%d %H:%M:%S")));
+    md.push_str(&format!("**jij 版本：** v{}\n\n", env!("CARGO_PKG_VERSION")));
+
+    let (total, success, _) = agent.session_stats();
+    md.push_str("## 操作统计\n\n");
+    md.push_str(&format!("| 指标 | 数值 |\n|------|------|\n"));
+    md.push_str(&format!("| 总步数 | {} |\n", total));
+    md.push_str(&format!("| 成功数 | {} |\n", success));
+    md.push_str(&format!("| 失败数 | {} |\n\n", total.saturating_sub(success)));
+
+    md.push_str("## 操作记录\n\n");
+    if agent.memory.operations.is_empty() {
+        md.push_str("_本次会话没有操作记录。_\n");
+    } else {
+        md.push_str("| # | 工具 | 结果 | 可撤销 |\n|---|------|------|--------|\n");
+        for (i, op) in agent.memory.operations.iter().enumerate() {
+            let ok  = op.result.as_ref().map(|r| r.success).unwrap_or(false);
+            let undo = if op.rollback.is_some() { "是" } else { "否" };
+            let reason = op.tool_call.reason.as_deref().unwrap_or("-");
+            md.push_str(&format!(
+                "| {} | `{}` | {} | {} |\n",
+                i + 1, op.tool_call.tool,
+                if ok { "✅ 成功" } else { "❌ 失败" },
+                undo,
+            ));
+            if reason != "-" {
+                md.push_str(&format!("> 💭 {}\n\n", reason));
+            }
+        }
+    }
+
+    md.push_str("\n## 系统环境\n\n");
+    if let Some(ctx) = &agent.memory.system_context {
+        md.push_str(&format!("- **OS：** {}\n", ctx.os_info));
+        md.push_str(&format!("- **主机名：** {}\n", ctx.hostname));
+        md.push_str(&format!("- **CPU：** {}\n", ctx.cpu_info));
+        md.push_str(&format!("- **内存：** {}\n", ctx.memory_info));
+        md.push_str(&format!("- **磁盘：** {}\n", ctx.disk_info));
+        md.push_str(&format!("- **包管理器：** {}\n", ctx.package_manager));
+    }
+
+    md.push_str("\n---\n_由 jij AI 操作系统智能代理自动生成_\n");
+
+    match fs::write(path, &md) {
+        Ok(()) => println!("\n📄 会话记录已导出到：{}\n", path),
+        Err(e) => println!("\n❌ 导出失败: {}\n", e),
+    }
 }
 
 async fn show_history() {
