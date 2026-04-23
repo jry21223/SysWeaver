@@ -57,9 +57,14 @@ jobs:
         run: copy target\${{ matrix.target }}\release\agent-unix.exe ${{ matrix.artifact }}
         shell: cmd
 
-      - name: 获取二进制信息
-        run: |
-          ls -lh ${{ matrix.artifact }} || dir ${{ matrix.artifact }}
+      - name: 获取二进制信息（Unix）
+        if: runner.os != 'Windows'
+        run: ls -lh ${{ matrix.artifact }}
+
+      - name: 获取二进制信息（Windows）
+        if: runner.os == 'Windows'
+        run: dir ${{ matrix.artifact }}
+        shell: cmd
 
       - name: 上传构件
         uses: actions/upload-artifact@v4
