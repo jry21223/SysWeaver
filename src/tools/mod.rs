@@ -1,6 +1,8 @@
+pub mod cron;
 pub mod file;
 pub mod log;
 pub mod net;
+pub mod package;
 pub mod process;
 pub mod service;
 pub mod shell;
@@ -71,6 +73,8 @@ impl ToolManager {
                 Box::new(user::UserTool::new()),
                 Box::new(log::LogTailTool::new()),
                 Box::new(net::NetCheckTool::new()),
+                Box::new(package::PackageTool::new()),
+                Box::new(cron::CronTool::new()),
             ],
             ssh: None,
         }

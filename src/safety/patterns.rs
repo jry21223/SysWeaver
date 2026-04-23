@@ -50,8 +50,11 @@ pub const MEDIUM_PATTERNS: &[&str] = &[
     r"chmod\s+[0-7]{3,4}\s+",              // 修改文件权限
     r"chown\s+",                           // 修改文件归属
     r"apt[\s-]+(remove|purge|autoremove)", // 卸载软件
+    r"apt-get\s+(-y\s+)?(remove|purge)",  // apt-get 卸载
     r"yum\s+(remove|erase)",               // 卸载软件 (RHEL)
     r"dnf\s+(remove|erase)",               // 卸载软件 (Fedora)
+    r"pacman\s+(-R|-Rs|--remove)",         // pacman 卸载包
+    r"apk\s+del\b",                        // Alpine apk 删除包
     r"pip\s+uninstall",                    // 卸载 Python 包
     r"rm\s+-rf?\s+/var/",                  // 删除 /var 下的内容
     r"rm\s+-rf?\s+/home/",                 // 删除 /home 下内容
