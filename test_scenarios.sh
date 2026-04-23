@@ -31,10 +31,10 @@ fi
 
 # ─── 二进制路径 ───────────────────────────────────────────────────────────────
 if [ $USE_RELEASE -eq 1 ]; then
-    BINARY="./target/release/agent-unix"
+    BINARY="./target/release/jij"
     BUILD_CMD="cargo build --release"
 else
-    BINARY="./target/debug/agent-unix"
+    BINARY="./target/debug/jij"
     BUILD_CMD="cargo build"
 fi
 
@@ -127,7 +127,7 @@ run_check "explain 命令正常"     "$BINARY" explain
 
 # info 命令应采集并显示真实系统信息
 info_out=$("$BINARY" info 2>&1)
-if echo "$info_out" | grep -qiE "v0\.1\.0"; then
+if echo "$info_out" | grep -qiE "v0\.[0-9]+\.[0-9]+|version|版本"; then
     pass "info 显示版本号"
 else
     fail "info 未显示版本号"

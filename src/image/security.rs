@@ -109,13 +109,20 @@ impl ImageSecurityScanner {
             }
         }
 
-        // 3. 评估风险等级
+        // 3. EXIF / metadata check (byte-pattern heuristic, no external crate)
+        let metadata_clean = if let Ok(decoded) = STANDARD.decode(&image.base64_data) {
+            check_exif_metadata_clean(&decoded, &mut warnings)
+        } else {
+            true
+        };
+
+        // 4. 评估风险等级
         let risk_level = self.evaluate_risk_level(&warnings);
 
         ImageSecurityScan {
             risk_level,
             warnings,
-            metadata_clean: true, // TODO: 实现真正 EXIF 检查
+            metadata_clean,
             detected_text: None,
             image_size: image.original_size,
         }
@@ -217,6 +224,71 @@ impl ImageSecurityScanner {
         // 如果有超过 50 个连续可打印字符，可能有嵌入文本
         max_consecutive > 50
     }
+}
+
+/// Check EXIF/metadata for suspicious content using byte-pattern heuristics.
+/// Returns true if metadata appears clean, false if suspicious patterns are found.
+/// Appends warning messages to `warnings` when issues are detected.
+fn check_exif_metadata_clean(bytes: &[u8], warnings: &mut Vec<String>) -> bool {
+    let mut clean = true;
+
+    // JPEG EXIF marker: FF E1 followed by "Exif\0\0"
+    if bytes.len() > 10 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        // Search for EXIF APP1 segment (FF E1)
+        let mut i = 2usize;
+        while i + 4 < bytes.len().min(65536) {
+            if bytes[i] == 0xFF {
+                let marker = bytes[i + 1];
+                if marker == 0xE1 && i + 10 < bytes.len() {
+                    let segment = &bytes[i + 4..bytes.len().min(i + 512)];
+                    let as_str = String::from_utf8_lossy(segment).to_lowercase();
+                    // Look for script injection in EXIF comment fields
+                    for kw in &["<script", "javascript:", "eval(", "exec("] {
+                        if as_str.contains(kw) {
+                            warnings.push(format!("EXIF 元数据中检测到可疑内容: {}", kw));
+                            clean = false;
+                        }
+                    }
+                    break;
+                }
+                // Skip non-APP1 segments
+                if marker != 0x00 && i + 3 < bytes.len() {
+                    let seg_len = (bytes[i + 2] as usize) << 8 | bytes[i + 3] as usize;
+                    i += 2 + seg_len.max(2);
+                } else {
+                    i += 2;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    // PNG tEXt/iTXt chunks: scan for embedded scripts
+    if bytes.len() > 8
+        && bytes[0] == 0x89
+        && &bytes[1..4] == b"PNG"
+    {
+        let chunk_kw = [b"tEXt", b"iTXt", b"zTXt"];
+        let mut i = 8usize;
+        while i + 12 < bytes.len().min(131072) {
+            let chunk_len = u32::from_be_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]) as usize;
+            let chunk_type = &bytes[i+4..i+8];
+            if chunk_kw.iter().any(|k| chunk_type == *k) && i + 8 + chunk_len < bytes.len() {
+                let data = &bytes[i+8..i+8+chunk_len.min(512)];
+                let as_str = String::from_utf8_lossy(data).to_lowercase();
+                for kw in &["<script", "javascript:", "eval(", "exec("] {
+                    if as_str.contains(kw) {
+                        warnings.push(format!("PNG 元数据中检测到可疑内容: {}", kw));
+                        clean = false;
+                    }
+                }
+            }
+            i += 12 + chunk_len;
+        }
+    }
+
+    clean
 }
 
 /// 审计日志记录格式

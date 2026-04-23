@@ -71,7 +71,7 @@ pub async fn run_tui(
         "  💻 本地模式".to_string()
     };
     let welcome = format!(
-        "🤖 jij v0.2.0 已就绪\n\n【系统环境】\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  网络：{}\n  包管理器：{}\n{}\n\n【可用命令】\n  /help         显示帮助\n  /status       系统状态速览\n  /export       导出对话到文件（可复制）\n  /history      操作历史\n  /undo         撤销上一步\n  /voice tts    开启语音朗读\n  /exit         退出\n\n【快捷键】  Ctrl+Y 复制最后一条回复\n\n请用自然语言描述您的需求，例如：「查看磁盘使用情况」",
+        "🤖 jij v0.2.3 已就绪\n\n【系统环境】\n  OS：{}\n  主机：{}\n  CPU：{}\n  内存：{}\n  磁盘：{}\n  网络：{}\n  包管理器：{}\n{}\n\n【可用命令】\n  /help         显示帮助\n  /status       系统状态速览\n  /export       导出对话到文件（可复制）\n  /history      操作历史\n  /undo         撤销上一步\n  /voice tts    开启语音朗读\n  /exit         退出\n\n【快捷键】  Ctrl+Y 复制最后一条回复\n\n请用自然语言描述您的需求，例如：「查看磁盘使用情况」",
         ctx.os_info,
         ctx.hostname,
         ctx.cpu_info,
