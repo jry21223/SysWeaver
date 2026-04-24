@@ -168,41 +168,30 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     lines.push(Line::from(Span::styled("  服务", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
 
     let svc_limit = if compact { 4 } else { 6 };
-    // 名称列宽 = 总宽 - "  ● " (4) - " 99.9% " (7) - " 999M" (5) - 边距(2)
-    let name_w = (body.width as usize).saturating_sub(18).max(6);
+    let name_w = (body.width as usize).saturating_sub(6).max(6);
 
     if !state.service_status.is_empty() {
+        // 设计要求：仅显示 ● + 服务名（无 CPU/MEM 列）
         for svc in state.service_status.iter().take(svc_limit) {
-            let cpu_str = if svc.cpu_pct >= 0.05 {
-                format!("{:>4.1}%", svc.cpu_pct)
-            } else {
-                "  0% ".to_string()
-            };
-            let mem_str = if svc.mem_mb >= 1024.0 {
-                format!("{:>3.1}G", svc.mem_mb / 1024.0)
-            } else {
-                format!("{:>3.0}M", svc.mem_mb)
-            };
-            let cpu_color = if svc.cpu_pct > 30.0 { theme::CLR_RED }
-                else if svc.cpu_pct > 10.0 { theme::CLR_AMBER }
-                else { theme::CLR_FG_MUTED };
+            // 不活跃服务（CPU=0 且 MEM=0）灰色显示
+            let active = svc.cpu_pct > 0.0 || svc.mem_mb > 0.0;
             lines.push(Line::from(vec![
-                Span::styled("  ● ", Style::default().fg(theme::CLR_GREEN)),
                 Span::styled(
-                    format!("{:<width$}", svc.name.chars().take(name_w).collect::<String>(), width = name_w),
-                    Style::default().fg(theme::CLR_FG),
+                    "  ● ",
+                    Style::default().fg(if active { theme::CLR_GREEN } else { theme::CLR_DIM }),
                 ),
-                Span::styled(cpu_str, Style::default().fg(cpu_color)),
-                Span::styled(format!(" {}", mem_str), theme::style_dim()),
+                Span::styled(
+                    svc.name.chars().take(name_w).collect::<String>(),
+                    Style::default().fg(if active { theme::CLR_FG } else { theme::CLR_FG_MUTED }),
+                ),
             ]));
         }
     } else {
-        // 数据还未到达时回退到 running_services（无资源数据）
         for svc in ctx.running_services.iter().take(svc_limit) {
             lines.push(Line::from(vec![
                 Span::styled("  ● ", Style::default().fg(theme::CLR_GREEN)),
                 Span::styled(
-                    svc.chars().take(name_w + 12).collect::<String>(),
+                    svc.chars().take(name_w).collect::<String>(),
                     Style::default().fg(theme::CLR_FG),
                 ),
             ]));
@@ -220,10 +209,15 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             Style::default().fg(theme::CLR_BORDER),
         )));
         lines.push(Line::from(Span::styled("  网络", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
-        lines.push(Line::from(Span::styled(
-            format!("  {}", ctx.network_info.chars().take(30).collect::<String>()),
-            theme::style_dim(),
-        )));
+        let max_w = body.width.saturating_sub(4) as usize;
+        for (label, value) in parse_network_info(&ctx.network_info) {
+            if value.is_empty() { continue; }
+            let truncated: String = value.chars().take(max_w.saturating_sub(label.chars().count() + 1)).collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", label), theme::style_dim()),
+                Span::styled(truncated, Style::default().fg(theme::CLR_FG_MUTED)),
+            ]));
+        }
     }
 
     // ── 高度裁剪（防止溢出）──
@@ -231,6 +225,55 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     let para = Paragraph::new(lines).style(Style::default().bg(theme::CLR_BG_PANEL));
     f.render_widget(para, body);
+}
+
+/// 将 "IP:1.1.1.1 2.2.2.2 | GW:3.3.3.3 | 监听端口:80,443" 解析为
+/// [(IP, "1.1.1.1 2.2.2.2"), (GW, "3.3.3.3"), (监听端口, "80,443")]
+fn parse_network_info(info: &str) -> Vec<(&'static str, String)> {
+    let mut ip = String::new();
+    let mut gw = String::new();
+    let mut ports = String::new();
+
+    // 优先按 "|" 分段（新格式）
+    let segments: Vec<&str> = if info.contains('|') {
+        info.split('|').collect()
+    } else {
+        info.split_whitespace()
+            .fold(Vec::new(), |mut acc: Vec<String>, tok| {
+                if tok.contains(':') {
+                    acc.push(tok.to_string());
+                } else if let Some(last) = acc.last_mut() {
+                    last.push(' ');
+                    last.push_str(tok);
+                }
+                acc
+            })
+            .iter()
+            .map(|s| Box::leak(s.clone().into_boxed_str()) as &str)
+            .collect()
+    };
+
+    for seg in segments {
+        let s = seg.trim();
+        if let Some(rest) = s.strip_prefix("IP:").or_else(|| s.strip_prefix("IP ")) {
+            ip = rest.trim().to_string();
+        } else if let Some(rest) = s.strip_prefix("GW:").or_else(|| s.strip_prefix("GW ")) {
+            gw = rest.trim().to_string();
+        } else if let Some(rest) = s.strip_prefix("监听端口:").or_else(|| s.strip_prefix("端口:")) {
+            ports = rest.trim().trim_end_matches(',').to_string();
+        }
+    }
+
+    if ip.is_empty() && gw.is_empty() && ports.is_empty() {
+        // 完全无法解析时，把整个串当 IP 显示
+        ip = info.chars().take(40).collect();
+    }
+
+    vec![
+        ("IP", ip),
+        ("GW", gw),
+        ("监听端口", ports),
+    ]
 }
 
 fn bar_color_style(pct: f64) -> Style {
@@ -350,9 +393,11 @@ fn parse_cpu_info(info: &str) -> (usize, String) {
     (cores, model)
 }
 
-/// 将 "4.2G" / "512M" 转为 GB
+/// 将 "4.2G" / "512M" / "1.6Gi" / "1024Mi" 转为 GB
 fn parse_size_gb(s: &str) -> f64 {
     if s.is_empty() { return 0.0; }
+    // 先去掉 "i" 后缀（Gi/Mi/Ki/Ti）
+    let s = s.strip_suffix('i').unwrap_or(s);
     let (num_part, unit) = if s.ends_with(|c: char| c.is_alphabetic()) {
         let n = &s[..s.len() - 1];
         let u = &s[s.len() - 1..];

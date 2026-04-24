@@ -71,8 +71,22 @@ pub async fn run_tui(
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "user".to_string());
 
+    // ── SSH 模式：先做一次同步远程扫描，让 Agent 系统提示词使用远程上下文 ──
+    // 否则 LLM 会以为自己运行在用户的本机上（如 MacBook）
+    let effective_ctx = if let Some(ref ssh) = ssh_config {
+        match tokio::time::timeout(
+            Duration::from_secs(15),
+            crate::context::system_scan::scan_remote(ssh),
+        ).await {
+            Ok(remote) if !remote.hostname.is_empty() && remote.hostname != "未知" => remote,
+            _ => ctx.clone(),  // 远程扫描失败时回退到本地 ctx（避免阻塞启动）
+        }
+    } else {
+        ctx.clone()
+    };
+
     let mut state = AppState::new(mode.clone(), provider_short, session_id.clone(), username);
-    state.system_ctx = Some(ctx.clone());
+    state.system_ctx = Some(effective_ctx.clone());
     if let Some(ref ssh) = ssh_config {
         state.is_remote = true;
         state.remote_label = Some(format!("🔗 {} (SSH)", ssh.display()));
@@ -85,6 +99,7 @@ pub async fn run_tui(
         "💻 本地模式".to_string()
     };
     let version = env!("CARGO_PKG_VERSION");
+    let ctx = effective_ctx.clone();  // shadow: 后续欢迎/agent 都使用 effective ctx
     let welcome = format!(
         "╭─────────────────────────────────────────────────────────╮\n\
          │  🤖  jij v{:<8}   {:<30}  │\n\
@@ -139,7 +154,6 @@ pub async fn run_tui(
     let agent_ctx = ctx.clone();
 
     let agent_ssh = ssh_config.clone();
-    let is_ssh = agent_ssh.is_some();
     tokio::spawn(async move {
         // 保留副本，供 /clear 命令重建 agent
         let saved_llm = agent_llm.clone();
@@ -374,20 +388,15 @@ pub async fn run_tui(
         }
     });
 
-    // ── SSH 模式：直接通过 SSH 扫描远程系统信息（不经过 agent）───────────
-    if is_ssh {
-        if let Some(ref ssh) = ssh_config {
-            let ssh_scan = ssh.clone();
-            let scan_tx = event_tx.clone();
-            tokio::spawn(async move {
-                let ctx = system_scan::scan_remote(&ssh_scan).await;
-                let svcs = system_scan::get_remote_service_status(&ssh_scan).await;
-                let _ = scan_tx.send(AgentEvent::SystemUpdate(ctx)).await;
-                let _ = scan_tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
-            });
-        }
+    // ── 服务状态初始化（系统信息已在启动时同步扫描完成）─────────────────
+    if let Some(ref ssh) = ssh_config {
+        let ssh_scan = ssh.clone();
+        let svc_tx = event_tx.clone();
+        tokio::spawn(async move {
+            let svcs = system_scan::get_remote_service_status(&ssh_scan).await;
+            let _ = svc_tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
+        });
     } else {
-        // 本地模式：初始化服务状态
         let svc_tx = event_tx.clone();
         tokio::spawn(async move {
             let svcs = system_scan::get_service_status().await;

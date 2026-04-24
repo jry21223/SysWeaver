@@ -150,9 +150,9 @@ pub async fn scan() -> SystemContext {
         "unknown".to_string()
     };
 
-    // 网络信息：本机 IP 及监听端口
+    // 网络信息：本机 IP / 网关 / 监听端口
     let network_info = if cfg!(target_os = "macos") {
-        run("ips=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -3 | tr '\\n' ' '); ports=$(lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | awk 'NR>1{print $9}' | sed 's/.*://' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"").await
+        run("ips=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -3 | tr '\\n' ' '); gw=$(route -n get default 2>/dev/null | awk '/gateway/{print $2}'); ports=$(lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | awk 'NR>1{print $9}' | sed 's/.*://' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1}|GW:${gw:-N/A}|监听端口:${ports:-无}\"").await
     } else if cfg!(windows) {
         {
             let raw = run("ipconfig 2>NUL | findstr \"IPv4\"").await;
@@ -166,7 +166,7 @@ pub async fn scan() -> SystemContext {
             format!("IP:{}", ip_str)
         }
     } else {
-        run("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); ports=$(ss -tlnp 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"").await
+        run("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); ports=$(ss -tln 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -8 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1}|GW:${gw:-N/A}|监听端口:${ports:-无}\"").await
     };
 
     SystemContext {
@@ -210,7 +210,7 @@ pub async fn scan_remote(ssh: &SshConfig) -> SystemContext {
         .filter(|s| !s.is_empty())
         .collect();
 
-    let network_info = exec("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); ports=$(ss -tlnp 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -6 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"".to_string()).await;
+    let network_info = exec("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); ports=$(ss -tln 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -6 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1}|GW:${gw:-N/A}|监听端口:${ports:-无}\"".to_string()).await;
 
     let package_manager = {
         let pm_raw = exec("which apt dnf yum brew 2>/dev/null | head -1".to_string()).await;

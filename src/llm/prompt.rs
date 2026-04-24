@@ -10,6 +10,24 @@ pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) ->
             } else {
                 ""
             };
+            // 通过 OS 推断是否远程 Linux 主机（粗略但够用）：
+            // 用户本机若是 macOS 而 ctx.os_info 是 Linux 发行版，说明在 SSH 远程 Linux
+            let is_remote_linux = !ctx.os_info.to_lowercase().contains("macos")
+                && !ctx.os_info.to_lowercase().contains("darwin")
+                && (ctx.os_info.to_lowercase().contains("ubuntu")
+                    || ctx.os_info.to_lowercase().contains("debian")
+                    || ctx.os_info.to_lowercase().contains("centos")
+                    || ctx.os_info.to_lowercase().contains("rhel")
+                    || ctx.os_info.to_lowercase().contains("linux")
+                    || ctx.os_info.to_lowercase().contains("openeuler")
+                    || ctx.os_info.to_lowercase().contains("alpine"));
+            let runtime_note = if cfg!(target_os = "macos") && is_remote_linux {
+                "\n\n⚠️  你正在通过 SSH 操作一台远程 Linux 服务器（不是用户的本机）。\n\
+                 - 所有工具调用会在远程主机上执行，回复时请明确说明在「这台服务器」/「目标主机」上的状态。\n\
+                 - 不要把自己描述成「运行在 MacBook 上」之类的本地代理；你的执行环境就是下方列出的 Linux 主机。"
+            } else {
+                ""
+            };
             format!(
                 r#"【当前系统环境】
 - 操作系统：{}
@@ -19,7 +37,7 @@ pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) ->
 - 磁盘：{}
 - 活跃服务：{}
 - 包管理器：{}
-- 网络：{}{}"#,
+- 网络：{}{}{}"#,
                 ctx.os_info,
                 ctx.hostname,
                 ctx.cpu_info,
@@ -29,6 +47,7 @@ pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) ->
                 ctx.package_manager,
                 ctx.network_info,
                 ssh_warning,
+                runtime_note,
             )
         }
         None => "【系统环境】尚未采集，请先执行 system.info 工具获取环境信息".to_string(),
