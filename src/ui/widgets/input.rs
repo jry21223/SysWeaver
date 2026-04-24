@@ -43,16 +43,24 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(state.input.clone(), Style::default().fg(theme::CLR_FG).bg(bg))
     };
 
-    // 右侧 Enter 提示（匹配 JSX）
+    // 右侧语音指示器 + Enter 提示
+    let voice_indicator = if state.voice_tts_enabled {
+        Span::styled(" 🎤", Style::default().fg(theme::CLR_GREEN).bg(bg))
+    } else if state.is_remote {
+        Span::styled(" 🔇", Style::default().fg(theme::CLR_DIM).bg(bg))
+    } else {
+        Span::styled("", Style::default().bg(bg))
+    };
     let enter_hint = Span::styled(" Enter ↵", Style::default().fg(theme::CLR_DIM).bg(bg));
 
     let input_line = Line::from(vec![
         prefix,
         placeholder,
         Span::styled(
-            " ".repeat(area.width.saturating_sub(state.input.width() as u16 + 10) as usize),
+            " ".repeat(area.width.saturating_sub(state.input.width() as u16 + 14) as usize),
             Style::default().bg(bg),
         ),
+        voice_indicator,
         enter_hint,
     ]);
 
@@ -72,7 +80,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         let cursor_y = input_line_area.y;
 
         // 光标在可见区内时才设置
-        if cursor_x < area.x + area.width - 10 { // 留右侧 Enter 提示空间
+        if cursor_x < area.x + area.width - 14 { // 留右侧提示空间
             f.set_cursor_position((cursor_x, cursor_y));
         }
     }

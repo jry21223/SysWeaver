@@ -27,8 +27,6 @@ pub const CLR_GREEN: Color    = Color::Rgb(80, 200, 120);
 pub const CLR_BORDER: Color   = Color::Rgb(60, 60, 90);
 
 // ── 保留旧常量名（兼容现有代码）────────────────────────────────────────────
-pub const CLR_USER: Color      = CLR_AMBER;    // 用户消息：琥珀色
-pub const CLR_AGENT: Color     = CLR_CYAN;     // Agent 回复：青色
 pub const CLR_TOOL: Color      = CLR_AMBER;    // 工具调用：琥珀色
 pub const CLR_SUCCESS: Color   = CLR_GREEN;    // 成功：绿
 pub const CLR_ERROR: Color     = CLR_RED;      // 错误：红
@@ -41,16 +39,10 @@ pub const CLR_MEDIUM: Color    = Color::Rgb(255, 200, 50);
 pub const CLR_HIGH: Color      = Color::Rgb(255, 140, 60);
 pub const CLR_CRITICAL: Color  = Color::Rgb(255, 60, 60);
 
-pub const CLR_GAUGE_BG: Color  = Color::Rgb(40, 40, 60);   // 进度条背景
-
 // ── Style 工厂函数 ────────────────────────────────────────────────────────
 
-pub fn style_user() -> Style {
-    Style::default().fg(CLR_USER).add_modifier(Modifier::BOLD)
-}
-
-pub fn style_agent() -> Style {
-    Style::default().fg(CLR_AGENT)
+pub fn style_error() -> Style {
+    Style::default().fg(CLR_ERROR).add_modifier(Modifier::BOLD)
 }
 
 pub fn style_tool() -> Style {
@@ -59,10 +51,6 @@ pub fn style_tool() -> Style {
 
 pub fn style_success() -> Style {
     Style::default().fg(CLR_SUCCESS)
-}
-
-pub fn style_error() -> Style {
-    Style::default().fg(CLR_ERROR).add_modifier(Modifier::BOLD)
 }
 
 pub fn style_warning() -> Style {
@@ -75,14 +63,6 @@ pub fn style_dryrun() -> Style {
 
 pub fn style_dim() -> Style {
     Style::default().fg(CLR_DIM)
-}
-
-pub fn style_border() -> Style {
-    Style::default().fg(CLR_BORDER)
-}
-
-pub fn style_border_active() -> Style {
-    Style::default().fg(CLR_BORDER_HL)
 }
 
 pub fn style_statusbar() -> Style {
@@ -121,13 +101,3 @@ pub fn bg_for_risk(level: &RiskLevel) -> Color {
     }
 }
 
-/// 根据使用率返回进度条颜色（绿→黄→红）
-pub fn gauge_color_by_pct(pct: f64) -> Color {
-    if pct < 0.6 {
-        CLR_SUCCESS
-    } else if pct < 0.85 {
-        CLR_WARNING
-    } else {
-        CLR_ERROR
-    }
-}
