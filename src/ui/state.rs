@@ -22,6 +22,8 @@ pub struct AppState {
     pub mode: String,           // safe / normal / auto
     pub provider: String,       // claude-sonnet-4-5 等
     pub session_id: String,
+    pub username: String,       // 系统登录用户名
+    pub tips_tick: u64,         // tips 轮播计数（每 80ms +1）
 
     // ── 弹窗（Some = 显示，None = 正常界面）────────────────────
     pub modal: Option<ModalState>,
@@ -93,7 +95,7 @@ pub struct ModalState {
 }
 
 impl AppState {
-    pub fn new(mode: String, provider: String, session_id: String) -> Self {
+    pub fn new(mode: String, provider: String, session_id: String, username: String) -> Self {
         Self {
             messages: Vec::new(),
             scroll_offset: usize::MAX, // 初始自动滚到底
@@ -104,6 +106,8 @@ impl AppState {
             mode,
             provider,
             session_id,
+            username,
+            tips_tick: 0,
             modal: None,
             is_thinking: false,
             spinner_frame: 0,
@@ -332,6 +336,11 @@ impl AppState {
                 let _ = tx.send(confirmed);
             }
         }
+    }
+
+    /// 推进 tips 轮播帧（每次 spinner_tick 调用）
+    pub fn tick_tips(&mut self) {
+        self.tips_tick = self.tips_tick.wrapping_add(1);
     }
 
     /// 推进 spinner 帧

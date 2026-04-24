@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -8,6 +8,25 @@ use ratatui::{
 
 use crate::ui::state::AppState;
 use crate::ui::theme;
+
+// 右上角轮播 tips（每条约 5 秒，80ms * 62 ≈ 5s）
+const TIPS: &[&str] = &[
+    "试试: 查看系统负载",
+    "试试: 找出大文件 >100M",
+    "试试: 列出监听端口",
+    "试试: 查看最近登录记录",
+    "试试: 内存占用 Top5 进程",
+    "试试: 检查磁盘健康状态",
+    "Ctrl+P/N  浏览输入历史",
+    "Ctrl+Y    复制 Agent 回复",
+    "PgUp/Dn   滚动对话历史",
+    "/status   实时系统快照",
+    "/report   生成健康报告",
+    "/export   导出对话记录",
+    "/playbook 保存常用操作",
+];
+
+const TIPS_TICKS_PER_SLIDE: u64 = 62; // 62 × 80ms ≈ 5 秒
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let mode_color = match state.mode.as_str() {
@@ -17,7 +36,17 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         _        => Color::Gray,
     };
 
-    let mut spans = vec![
+    // ── 左侧内容 ─────────────────────────────────────────────────────────
+    let mut left_spans = vec![
+        // 用户名徽章（左上角）
+        Span::styled(
+            format!(" ● {} ", state.username),
+            Style::default()
+                .fg(Color::Rgb(212, 160, 74))   // Tokyo Night amber
+                .bg(theme::CLR_STATUSBAR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" │ ", theme::style_dim()),
         Span::styled(" 🤖 jij ", Style::default()
             .fg(Color::White)
             .bg(theme::CLR_STATUSBAR)
@@ -41,9 +70,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     // 若正在思考，显示步骤进度 + spinner
     if state.is_thinking {
-        spans.push(Span::styled(" │ ", theme::style_dim()));
+        left_spans.push(Span::styled(" │ ", theme::style_dim()));
         if state.task_step > 0 {
-            spans.push(Span::styled(
+            left_spans.push(Span::styled(
                 format!(" Step {} ", state.task_step),
                 Style::default()
                     .fg(Color::Rgb(100, 220, 255))
@@ -52,13 +81,13 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             ));
             if !state.task_hint.is_empty() {
                 let hint_short: String = state.task_hint.chars().take(20).collect();
-                spans.push(Span::styled(
+                left_spans.push(Span::styled(
                     format!("• {} ", hint_short),
                     Style::default().fg(Color::Rgb(160, 160, 200)).bg(theme::CLR_STATUSBAR),
                 ));
             }
         }
-        spans.push(Span::styled(
+        left_spans.push(Span::styled(
             format!(" {} 处理中… ", state.spinner_char()),
             Style::default()
                 .fg(Color::Rgb(255, 220, 100))
@@ -69,8 +98,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     // 语音 TTS 状态
     if state.voice_tts_enabled {
-        spans.push(Span::styled(" │ ", theme::style_dim()));
-        spans.push(Span::styled(
+        left_spans.push(Span::styled(" │ ", theme::style_dim()));
+        left_spans.push(Span::styled(
             " 🔊 TTS ",
             Style::default()
                 .fg(Color::Black)
@@ -81,8 +110,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     // 复制成功通知
     if state.copy_notice_frames > 0 {
-        spans.push(Span::styled(" │ ", theme::style_dim()));
-        spans.push(Span::styled(
+        left_spans.push(Span::styled(" │ ", theme::style_dim()));
+        left_spans.push(Span::styled(
             " ✓ 已复制 ",
             Style::default()
                 .fg(Color::Black)
@@ -91,18 +120,32 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         ));
     }
 
-    // 右侧快捷键提示
-    let hints = vec![
-        Span::styled(" /exit", theme::style_statusbar_key()),
-        Span::styled(" 退出 ", theme::style_dim()),
-        Span::styled(" Ctrl+Y", theme::style_statusbar_key()),
-        Span::styled(" 复制 ", theme::style_dim()),
-        Span::styled(" PgUp/Dn", theme::style_statusbar_key()),
-        Span::styled(" 滚动 ", theme::style_dim()),
-    ];
-    spans.extend(hints);
+    // ── 右侧内容：轮播 tips ───────────────────────────────────────────────
+    let tip_idx = ((state.tips_tick / TIPS_TICKS_PER_SLIDE) as usize) % TIPS.len();
+    let tip_text = TIPS[tip_idx];
 
-    let line = Line::from(spans);
-    let para = Paragraph::new(line).style(theme::style_statusbar());
-    f.render_widget(para, area);
+    let right_spans = vec![
+        Span::styled(
+            format!(" 💡 {} ", tip_text),
+            Style::default()
+                .fg(Color::Rgb(130, 170, 130))
+                .bg(theme::CLR_STATUSBAR),
+        ),
+    ];
+
+    // ── 布局：左填充 / 右固定宽度 ────────────────────────────────────────
+    let tip_display_width = (tip_text.chars().count() + 5) as u16; // " 💡 " + " "
+    let [left_area, right_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(tip_display_width.max(20).min(area.width / 2)),
+    ])
+    .areas(area);
+
+    let left_para = Paragraph::new(Line::from(left_spans))
+        .style(theme::style_statusbar());
+    let right_para = Paragraph::new(Line::from(right_spans))
+        .style(theme::style_statusbar());
+
+    f.render_widget(left_para, left_area);
+    f.render_widget(right_para, right_area);
 }

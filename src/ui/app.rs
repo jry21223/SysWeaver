@@ -60,8 +60,12 @@ pub async fn run_tui(
     // ── AppState 初始化 ───────────────────────────────────────────────────
     let provider_short = llm_config.model.chars().take(24).collect::<String>();
     let session_id = Uuid::new_v4().to_string();
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "user".to_string());
 
-    let mut state = AppState::new(mode.clone(), provider_short, session_id.clone());
+    let mut state = AppState::new(mode.clone(), provider_short, session_id.clone(), username);
     state.system_ctx = Some(ctx.clone());
 
     // 启动欢迎消息（展示系统环境感知能力）
@@ -370,7 +374,7 @@ pub async fn run_tui(
                 }
             }
 
-            // Spinner 动画 + 复制通知倒计时
+            // Spinner 动画 + 复制通知倒计时 + tips 轮播
             _ = spinner_tick.tick() => {
                 if state.is_thinking {
                     state.tick_spinner();
@@ -378,6 +382,7 @@ pub async fn run_tui(
                 if state.copy_notice_frames > 0 {
                     state.tick_copy_notice();
                 }
+                state.tick_tips();
             }
 
             // 键盘/终端事件

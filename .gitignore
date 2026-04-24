@@ -10,6 +10,9 @@ Cargo.lock
 # 运行时数据
 .agent-unix/
 
+# 本地编译产物（CI 负责构建，不提交二进制）
+releases/
+
 # IDE
 .idea/
 .vscode/

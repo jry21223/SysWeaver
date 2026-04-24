@@ -71,6 +71,7 @@ pub fn style_statusbar() -> Style {
     Style::default().fg(Color::White).bg(CLR_STATUSBAR)
 }
 
+#[allow(dead_code)] // 预留给未来快捷键徽章渲染
 pub fn style_statusbar_key() -> Style {
     Style::default()
         .fg(Color::Black)
