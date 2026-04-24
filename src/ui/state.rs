@@ -4,11 +4,47 @@ use tokio::sync::oneshot;
 use crate::agent::memory::SystemContext;
 use crate::types::risk::RiskLevel;
 
+/// 主内容区当前激活的标签页
+#[derive(Clone, PartialEq)]
+pub enum ActiveTab {
+    Chat,
+    Monitor,
+    History,
+}
+
+impl ActiveTab {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Chat    => Self::Monitor,
+            Self::Monitor => Self::History,
+            Self::History => Self::Chat,
+        }
+    }
+}
+
+/// 进程信息（用于监控面板缓存）
+#[derive(Clone)]
+pub struct ProcessRow {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_pct: f32,
+    pub mem_mb: f32,
+}
+
 /// 整个 TUI 的全量渲染状态（唯一数据源）
 pub struct AppState {
     // ── 左侧对话区 ──────────────────────────────────────────────
     pub messages: Vec<ChatLine>,
     pub scroll_offset: usize,
+
+    // ── 进程缓存（避免每帧 shell out）────────────────────────
+    pub process_list: Vec<ProcessRow>,
+    pub process_list_tick: u8,  // 自上次刷新后的 tick 计数
+
+    // ── CPU 使用率缓存（在 process tick 中同步采集）──────
+    pub cpu_usage_pct: f32,
+    pub cpu_peak_pct: f32,
+    pub cpu_history: Vec<f32>,  // 最近 20 个采样点（供 sparkline）
 
     // ── 右侧状态面板 ────────────────────────────────────────────
     pub system_ctx: Option<SystemContext>,
@@ -23,7 +59,12 @@ pub struct AppState {
     pub provider: String,       // claude-sonnet-4-5 等
     pub session_id: String,
     pub username: String,       // 系统登录用户名
-    pub tips_tick: u64,         // tips 轮播计数（每 80ms +1）
+
+    // ── 标签页 ──────────────────────────────────────────────────
+    pub active_tab: ActiveTab,
+
+    // ── 右侧面板折叠 ──────────────────────────────────────────
+    pub side_collapsed: bool,
 
     // ── 弹窗（Some = 显示，None = 正常界面）────────────────────
     pub modal: Option<ModalState>,
@@ -107,7 +148,13 @@ impl AppState {
             provider,
             session_id,
             username,
-            tips_tick: 0,
+            active_tab: ActiveTab::Chat,
+            side_collapsed: false,
+            process_list: Vec::new(),
+            process_list_tick: 0,
+            cpu_usage_pct: 0.0,
+            cpu_peak_pct: 0.0,
+            cpu_history: Vec::new(),
             modal: None,
             is_thinking: false,
             spinner_frame: 0,
@@ -338,14 +385,28 @@ impl AppState {
         }
     }
 
-    /// 推进 tips 轮播帧（每次 spinner_tick 调用）
-    pub fn tick_tips(&mut self) {
-        self.tips_tick = self.tips_tick.wrapping_add(1);
-    }
-
     /// 推进 spinner 帧
     pub fn tick_spinner(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    }
+
+    /// 推进进程列表缓存（每次 spinner_tick 调用，~80ms）
+    /// 每 25 ticks（约 2 秒）刷新一次进程列表
+    pub fn tick_process_list(&mut self) {
+        self.process_list_tick = self.process_list_tick.wrapping_add(1);
+        if self.process_list_tick >= 25 || self.process_list.is_empty() {
+            self.process_list_tick = 0;
+            self.process_list = self::fetch_process_list();
+            let cpu = self::sample_cpu_usage();
+            self.cpu_usage_pct = cpu;
+            if cpu > self.cpu_peak_pct {
+                self.cpu_peak_pct = cpu;
+            }
+            self.cpu_history.push(cpu);
+            if self.cpu_history.len() > 20 {
+                self.cpu_history.remove(0);
+            }
+        }
     }
 
     /// 获取当前 spinner 字符
@@ -353,6 +414,89 @@ impl AppState {
         const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         FRAMES[self.spinner_frame % FRAMES.len()]
     }
+}
+
+/// 执行 ps 获取进程列表（不在热路径上调用，由 tick_process_list 限流）
+fn fetch_process_list() -> Vec<ProcessRow> {
+    let output = match std::process::Command::new("ps")
+        .args(["aux"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut rows: Vec<ProcessRow> = stdout
+        .lines()
+        .skip(1) // 跳过标题行
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 11 {
+                return None;
+            }
+            let pid: u32 = parts[1].parse().ok()?;
+            let cpu_pct: f32 = parts[2].parse().ok()?;
+            let _mem_pct: f32 = parts[3].parse().ok()?;
+            let mem_kb: f32 = parts[5].parse().unwrap_or(0.0);
+            let name = parts[10..].join(" ");
+            Some(ProcessRow {
+                pid,
+                name,
+                cpu_pct,
+                mem_mb: mem_kb / 1024.0,
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
+    rows.truncate(50);
+    rows
+}
+
+/// 采集当前 CPU 使用率百分比（macOS top / Linux /proc/stat 回退）
+fn sample_cpu_usage() -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("top")
+            .args(["-l", "1", "-n", "0"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("CPU usage") {
+                    // "CPU usage: 5.27% user, 8.12% sys, 86.60% idle"
+                    let tokens: Vec<&str> = line.split_whitespace().collect();
+                    // idle 是倒数第二个 token: "86.60%" 在 "idle" 前面
+                    if tokens.len() >= 2 {
+                        let idle_str = tokens[tokens.len() - 2].trim_end_matches('%');
+                        if let Ok(idle) = idle_str.parse::<f32>() {
+                            return (100.0 - idle).max(0.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Ok(output) = std::process::Command::new("top")
+            .args(["-bn1"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("%Cpu") {
+                    // "%Cpu(s):  5.2 us,  2.1 sy,  0.0 ni, 92.0 id, ..."
+                    let user: f32 = line.split("us").next().and_then(|s| {
+                        s.split_whitespace().last()?.parse().ok()
+                    }).unwrap_or(0.0);
+                    return user;
+                }
+            }
+        }
+    }
+
+    0.0
 }
 
 /// 跨平台剪贴板写入（macOS: pbcopy，Linux: xclip/xsel，Windows: clip.exe）

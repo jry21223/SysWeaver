@@ -1,218 +1,230 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::ui::state::AppState;
 use crate::ui::theme;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .title(Span::styled(" 📊 系统状态 ", theme::style_border()))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::style_border())
-        .style(Style::default().bg(theme::CLR_BG_PANEL));
+    let inner = area;
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    // ── 折叠态：窄竖条 ──
+    if state.side_collapsed {
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "◁",
+                Style::default().fg(theme::CLR_FG_MUTED),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "系",
+                Style::default().fg(theme::CLR_CYAN),
+            )),
+            Line::from(Span::styled(
+                "统",
+                Style::default().fg(theme::CLR_CYAN),
+            )),
+        ];
+        // 截断以适应高度
+        lines.truncate(inner.height as usize);
+        let collapsed_para = Paragraph::new(lines)
+            .style(Style::default().bg(theme::CLR_BG_PANEL));
+        f.render_widget(collapsed_para, inner);
+        return;
+    }
+
+    // ── 展开态顶部：SYSTEM 标题 + ▷ 折叠按钮 ──
+    let header_line = Line::from(vec![
+        Span::styled(
+            " SYSTEM ",
+            Style::default()
+                .fg(theme::CLR_DIM)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(inner.width.saturating_sub(9) as usize)),
+        Span::styled("▷", Style::default().fg(theme::CLR_FG_MUTED)),
+    ]);
+    f.render_widget(
+        Paragraph::new(header_line).style(Style::default().bg(theme::CLR_BG_PANEL)),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+
+    // 主体内容区域（跳过标题行）
+    let body = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
 
     // 无系统信息时显示 loading
     let Some(ctx) = &state.system_ctx else {
-        let loading = Paragraph::new(Span::styled(
-            "\n  正在扫描系统…",
-            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
-        ));
-        f.render_widget(loading, inner);
+        let loading = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  SYSTEM",
+                Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled("  正在扫描…", theme::style_dim())),
+        ]);
+        f.render_widget(loading, body);
         return;
     };
 
-    // ── 垂直切分：系统信息区 / 操作历史区 ────────────────────────────────
-    let history_height = (state.ops_history.len() as u16 + 3).min(inner.height / 2);
-
-    let [sys_area, hist_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(history_height),
-    ])
-    .areas(inner);
-
-    render_sys_info(f, sys_area, ctx, state);
-    render_ops_history(f, hist_area, state);
-}
-
-fn render_sys_info(
-    f: &mut Frame,
-    area: Rect,
-    ctx: &crate::agent::memory::SystemContext,
-    _state: &AppState,
-) {
-    // 解析 memory_info：格式 "16.0G total, 4.2G used"
+    // 解析 memory_info 和 disk_info
     let (mem_used_pct, mem_label) = parse_mem_pct(&ctx.memory_info);
-    // 解析 disk_info：格式 "/dev/sda1 80G, 45% used"
     let (disk_used_pct, disk_label) = parse_disk_pct(&ctx.disk_info);
-    // 解析 cpu_info：格式 "8\nIntel Core i7..." 或 "8Intel..."
     let (cpu_cores, cpu_model) = parse_cpu_info(&ctx.cpu_info);
 
-    let rows: &[(&str, f64, String)] = &[
-        ("MEM ", mem_used_pct, mem_label),
-        ("DISK", disk_used_pct, disk_label),
-    ];
+    // ── 构建面板内容（匹配 JSX SystemPanel）──────────────────────────────
+    let mut lines: Vec<Line> = Vec::new();
 
-    // 上方：hostname + OS
-    let info_height = 4u16;
-    let gauge_height = (rows.len() as u16) * 2 + 1;
+    // 标题：系统状态（青色粗体）
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  系统状态",
+        Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD),
+    )));
 
-    if area.height < info_height + gauge_height {
-        // 空间不足，只显示文字
-        let text = Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(" {} @ {}", ctx.os_info.chars().take(20).collect::<String>(), ctx.hostname),
-                Style::default().fg(Color::Rgb(180, 180, 220)),
-            )),
-            Line::from(Span::styled(format!(" MEM: {}", ctx.memory_info), theme::style_dim())),
-            Line::from(Span::styled(format!(" DSK: {}", ctx.disk_info), theme::style_dim())),
-        ]);
-        f.render_widget(text, area);
-        return;
-    }
+    // HOSTNAME 区
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  HOSTNAME", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", ctx.hostname),
+        Style::default().fg(theme::CLR_FG),
+    )));
+    // OS + CPU 概要
+    let os_short: String = ctx.os_info.chars().take(20).collect();
+    let cpu_short: String = cpu_model.chars().take(16).collect();
+    lines.push(Line::from(Span::styled(
+        format!("  {} · {}", os_short, if cpu_cores > 0 { format!("{}c", cpu_cores) } else { cpu_short }),
+        theme::style_dim(),
+    )));
 
-    let [header_area, gauges_area, services_area] = Layout::vertical([
-        Constraint::Length(info_height),
-        Constraint::Length(gauge_height),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
+    // CPU 区 — 基于实际采样的 sparkline
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  CPU", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD))));
 
-    // ── 主机信息 ─────────────────────────────────────────────────────────
-    let os_short: String = ctx.os_info.chars().take(26).collect();
-    let cpu_line = if cpu_cores > 0 {
-        format!("  CPU ×{}  {}", cpu_cores, cpu_model.chars().take(18).collect::<String>())
+    if state.cpu_history.len() >= 2 {
+        let spark = make_sparkline(&state.cpu_history);
+        lines.push(Line::from(Span::styled(
+            format!("  {}", spark),
+            Style::default().fg(theme::CLR_CYAN),
+        )));
+        let avg = state.cpu_history.iter().sum::<f32>() / state.cpu_history.len() as f32;
+        lines.push(Line::from(Span::styled(
+            format!("  avg {:.0}% · peak {:.0}%", avg, state.cpu_peak_pct),
+            theme::style_dim(),
+        )));
     } else {
-        format!("  CPU  {}", cpu_model.chars().take(22).collect::<String>())
-    };
-    let header = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  {}", ctx.hostname),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!("  {}", os_short),
-            Style::default().fg(Color::Rgb(160, 160, 200)),
-        )),
-        Line::from(Span::styled(cpu_line, theme::style_dim())),
-    ]);
-    f.render_widget(header, header_area);
-
-    // ── 进度条 ────────────────────────────────────────────────────────────
-    let gauge_rows: Vec<Constraint> = rows.iter().flat_map(|_| {
-        vec![Constraint::Length(1), Constraint::Length(1)]
-    }).chain(std::iter::once(Constraint::Length(1))).collect();
-
-    let gauge_areas = Layout::vertical(gauge_rows).split(gauges_area);
-
-    for (i, (label, pct, text)) in rows.iter().enumerate() {
-        let label_area = gauge_areas[i * 2];
-        let bar_area   = gauge_areas[i * 2 + 1];
-
-        let color = theme::gauge_color_by_pct(*pct);
-        let pct_u16 = (*pct * 100.0).round() as u16;
-
-        // label + 百分比文字
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("  {} ", label), theme::style_dim()),
-                Span::styled(text.clone(), Style::default().fg(color)),
-            ])),
-            label_area,
-        );
-
-        // Gauge bar
-        let gauge = Gauge::default()
-            .gauge_style(
-                Style::default()
-                    .fg(color)
-                    .bg(theme::CLR_GAUGE_BG),
-            )
-            .percent(pct_u16.min(100))
-            .label("");
-        f.render_widget(gauge, bar_area);
+        lines.push(Line::from(Span::styled("  采集数据中…", theme::style_dim())));
     }
 
-    // ── 活跃服务列表 ────────────────────────────────────────────────────
-    if !ctx.running_services.is_empty() && services_area.height > 2 {
-        let svc_block = Block::default()
-            .title(Span::styled(" 服务 ", theme::style_dim()))
-            .borders(Borders::TOP)
-            .border_style(theme::style_border());
+    // MEM 区（HTML 同款变色进度条）
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  MEM", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("    {}", mem_label), Style::default().fg(theme::CLR_FG)),
+    ]));
+    lines.push(make_colored_bar(mem_used_pct, 20));
 
-        let svc_inner = svc_block.inner(services_area);
-        f.render_widget(svc_block, services_area);
+    // DISK 区
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  DISK", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("    {}", disk_label), Style::default().fg(theme::CLR_FG)),
+    ]));
+    lines.push(make_colored_bar(disk_used_pct, 20));
 
-        let items: Vec<ListItem> = ctx
-            .running_services
-            .iter()
-            .take(svc_inner.height as usize)
-            .map(|s| {
-                ListItem::new(Line::from(vec![
-                    Span::styled("  ● ", theme::style_success()),
-                    Span::styled(
-                        s.chars().take(svc_inner.width.saturating_sub(4) as usize).collect::<String>(),
-                        Style::default().fg(Color::Rgb(180, 200, 180)),
-                    ),
-                ]))
-            })
-            .collect();
+    // 服务区（分隔线）
+    lines.push(Line::from(""));
+    let sep_width = body.width.saturating_sub(2) as usize;
+    lines.push(Line::from(Span::styled(
+        "─".repeat(sep_width),
+        Style::default().fg(theme::CLR_BORDER),
+    )));
 
-        f.render_widget(List::new(items), svc_inner);
+    lines.push(Line::from(Span::styled("  服务", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
+
+    // 服务列表（绿点活跃，灰点不活跃）
+    let svc_max_width = body.width.saturating_sub(8) as usize;
+    for svc in ctx.running_services.iter().take(4) {
+        let is_active = true; // 简化：都视为活跃
+        lines.push(Line::from(vec![
+            Span::styled("  ● ", Style::default().fg(if is_active { theme::CLR_GREEN } else { theme::CLR_DIM })),
+            Span::styled(
+                svc.chars().take(svc_max_width).collect::<String>(),
+                Style::default().fg(if is_active { theme::CLR_FG } else { theme::CLR_FG_MUTED }),
+            ),
+        ]));
     }
+
+    // 网络区
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(sep_width),
+        Style::default().fg(theme::CLR_BORDER),
+    )));
+
+    lines.push(Line::from(Span::styled("  网络", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
+    // 解析 network_info（格式："IP x.x.x.x / GW x.x.x.x"）
+    lines.push(Line::from(Span::styled(
+        format!("  {}", ctx.network_info.chars().take(30).collect::<String>()),
+        theme::style_dim(),
+    )));
+
+    // ── 渲染 ───────────────────────────────────────────────────────────────
+    let para = Paragraph::new(lines).style(Style::default().bg(theme::CLR_BG_PANEL));
+    f.render_widget(para, body);
 }
 
-fn render_ops_history(f: &mut Frame, area: Rect, state: &AppState) {
-    if area.height < 3 {
-        return;
-    }
-
-    let block = Block::default()
-        .title(Span::styled(" 📋 最近操作 ", theme::style_dim()))
-        .borders(Borders::TOP)
-        .border_style(theme::style_border());
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if state.ops_history.is_empty() {
-        f.render_widget(
-            Paragraph::new(Span::styled("  (暂无操作记录)", theme::style_dim())),
-            inner,
-        );
-        return;
-    }
-
-    let items: Vec<ListItem> = state
-        .ops_history
+/// 将 CPU 采样历史转为 sparkline 字符串（▁▂▃▄▅▆▇█）
+fn make_sparkline(samples: &[f32]) -> String {
+    const CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = samples.iter().cloned().fold(0.0f32, f32::max).max(1.0);
+    samples
         .iter()
-        .rev()
-        .take(inner.height as usize)
-        .map(|op| {
-            let icon = if op.success { "✅" } else { "❌" };
-            let tool_short: String = op.tool.chars().take(inner.width.saturating_sub(6) as usize).collect();
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("  {} ", icon)),
-                Span::styled(tool_short, theme::style_dim()),
-            ]))
+        .map(|&v| {
+            let idx = ((v / max) * (CHARS.len() - 1) as f32).round() as usize;
+            CHARS[idx.min(CHARS.len() - 1)]
         })
-        .collect();
+        .collect()
+}
 
-    f.render_widget(List::new(items), inner);
+/// HTML 同款变色进度条 — 按使用率阈值分段着色
+///  >90% 红色 · >70% 琥珀 · >50% 黄绿 · 其余绿色
+fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
+    let filled = (pct * width as f64).round() as usize;
+    let empty = width - filled;
+
+    let bar_color = if pct > 0.9 {
+        theme::CLR_RED
+    } else if pct > 0.7 {
+        theme::CLR_AMBER
+    } else if pct > 0.5 {
+        Color::Rgb(190, 210, 80) // 黄绿，对应 JSX oklch(0.75 0.16 110)
+    } else {
+        theme::CLR_GREEN
+    };
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
+        Span::styled("░".repeat(empty), Style::default().fg(theme::CLR_DIM)),
+        Span::styled(
+            format!(" {:.0}%", pct * 100.0),
+            Style::default().fg(bar_color),
+        ),
+    ])
 }
 
 /// 解析 "16.0G total, 4.2G used" → (0.26, "4.2G/16.0G")
 fn parse_mem_pct(info: &str) -> (f64, String) {
-    // 尝试从 "Xg total, Yg used" 解析
     let parts: Vec<&str> = info.split(',').collect();
     if parts.len() >= 2 {
         let total_str = parts[0].trim().split_whitespace().next().unwrap_or("0");
@@ -223,22 +235,21 @@ fn parse_mem_pct(info: &str) -> (f64, String) {
 
         if total > 0.0 {
             let pct = (used / total).min(1.0);
-            return (pct, format!("{}/{} ({:.0}%)", used_str, total_str, pct * 100.0));
+            return (pct, format!("{}/{}G", used_str, total_str));
         }
     }
     (0.0, info.chars().take(20).collect())
 }
 
-/// 解析 "494G total, 20.4G free, 39% used" → (0.39, "20.4G free/494G (39%)")
+/// 解析 "494G total, 20.4G free, 39% used" → (0.39, "20.4G free")
 fn parse_disk_pct(info: &str) -> (f64, String) {
-    // 格式："{total} total, {free} free, {pct}% used"
     let parts: Vec<&str> = info.split(',').collect();
     if parts.len() >= 3 {
         let total_str = parts[0].trim().split_whitespace().next().unwrap_or("0");
         let free_str  = parts[1].trim().split_whitespace().next().unwrap_or("0");
         let pct_str   = parts[2].trim().split_whitespace().next().unwrap_or("0").trim_end_matches('%');
         if let Ok(pct) = pct_str.parse::<f64>() {
-            return (pct / 100.0, format!("{}free/{} ({:.0}%)", free_str, total_str, pct));
+            return (pct / 100.0, format!("{} free/{}", free_str, total_str));
         }
     }
     // 回退：找第一个 "XX%" 模式
@@ -253,7 +264,7 @@ fn parse_disk_pct(info: &str) -> (f64, String) {
     (0.0, info.chars().take(20).collect())
 }
 
-/// 解析 cpu_info：`nproc` 输出 + CPU model name，返回 (核心数, 型号简称)
+/// 解析 cpu_info
 fn parse_cpu_info(info: &str) -> (usize, String) {
     let mut cores: usize = 0;
     let mut model = String::new();
@@ -272,7 +283,7 @@ fn parse_cpu_info(info: &str) -> (usize, String) {
         }
     }
 
-    // nproc && model 合在一行时（如 "8Intel Core..."）
+    // nproc && model 合在一行时
     if cores == 0 && !info.is_empty() {
         let digits: String = info.chars().take_while(|c| c.is_ascii_digit()).collect();
         if !digits.is_empty() {
@@ -288,7 +299,7 @@ fn parse_cpu_info(info: &str) -> (usize, String) {
     (cores, model)
 }
 
-/// 将 "4.2G" / "512M" / "1024K" 转为 GB
+/// 将 "4.2G" / "512M" 转为 GB
 fn parse_size_gb(s: &str) -> f64 {
     if s.is_empty() {
         return 0.0;

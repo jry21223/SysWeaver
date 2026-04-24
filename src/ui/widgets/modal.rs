@@ -28,10 +28,10 @@ pub fn render(f: &mut Frame, area: Rect, modal: &ModalState) {
     };
 
     let title_text = match modal.risk_level {
-        crate::types::risk::RiskLevel::Critical => "🚨 CRITICAL — 操作已被阻止",
-        crate::types::risk::RiskLevel::High     => "⚠️  HIGH RISK — 需要确认",
-        crate::types::risk::RiskLevel::Medium   => "🟡 MEDIUM — 请确认",
-        _                                        => "ℹ️  确认操作",
+        crate::types::risk::RiskLevel::Critical => "⚠ 危险命令检测 — 已阻止",
+        crate::types::risk::RiskLevel::High     => "⚠ 危险命令检测",
+        crate::types::risk::RiskLevel::Medium   => "⚠ 需要确认",
+        _                                        => "ℹ  确认操作",
     };
 
     let block = Block::default()
@@ -67,7 +67,7 @@ pub fn render(f: &mut Frame, area: Rect, modal: &ModalState) {
         let cmd_short: String = modal.command_preview.chars().take(60).collect();
         info_lines.push(Line::from(vec![
             Span::styled("  命令：", theme::style_dim()),
-            Span::styled(cmd_short, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(cmd_short, Style::default().fg(theme::CLR_RED).add_modifier(Modifier::BOLD)),
         ]));
     }
 

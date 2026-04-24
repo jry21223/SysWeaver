@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -26,15 +26,8 @@ fn sanitize_output(s: &str) -> String {
 }
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .title(Span::styled(" 💬 对话 ", theme::style_border_active()))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::style_border_active())
-        .style(Style::default().bg(theme::CLR_BG));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    // 无边框设计（匹配 JSX：只有内容区，无外部边框）
+    let inner = area;
 
     // 将所有 ChatLine 转为 ratatui Line 列表
     let mut lines: Vec<Line> = Vec::new();
@@ -42,29 +35,29 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     for msg in &state.messages {
         match msg {
             ChatLine::UserMsg(text) => {
+                // JSX: 用户消息用 › 符号，琥珀色
                 lines.push(Line::from(vec![
-                    Span::styled("👤 你：", theme::style_user()),
+                    Span::styled("› ", Style::default().fg(theme::CLR_AMBER).add_modifier(Modifier::BOLD)),
                 ]));
                 // 支持多行用户输入
-                for (i, l) in text.lines().enumerate() {
-                    let prefix = if i == 0 { "" } else { "      " };
+                for l in text.lines() {
                     lines.push(Line::from(vec![
-                        Span::raw(prefix),
-                        Span::styled(l.to_string(), theme::style_user()),
+                        Span::styled("  ", Style::default()),
+                        Span::styled(l.to_string(), Style::default().fg(theme::CLR_FG)),
                     ]));
                 }
                 lines.push(Line::from(""));
             }
 
             ChatLine::AgentMsg(text) => {
+                // JSX: Agent 消息用 ◆ 符号，青色
                 lines.push(Line::from(vec![
-                    Span::styled("🤖 Agent：", theme::style_agent()),
+                    Span::styled("◆ ", Style::default().fg(theme::CLR_CYAN)),
                 ]));
-                for (i, l) in text.lines().enumerate() {
-                    let prefix = if i == 0 { "" } else { "         " };
+                for l in text.lines() {
                     lines.push(Line::from(vec![
-                        Span::raw(prefix),
-                        Span::styled(sanitize_output(l), theme::style_agent()),
+                        Span::styled("  ", Style::default()),
+                        Span::styled(sanitize_output(l), Style::default().fg(theme::CLR_FG)),
                     ]));
                 }
                 lines.push(Line::from(""));
@@ -84,19 +77,25 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                     args.clone()
                 };
 
+                // 工具调用：琥珀色图标 + 步骤号
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  🔧 Step {}: ", step), theme::style_tool()),
-                    Span::styled(tool.clone(), Style::default().fg(theme::CLR_TOOL).add_modifier(Modifier::UNDERLINED)),
+                    Span::styled(format!("  ◇ Step {}: ", step), Style::default().fg(theme::CLR_AMBER)),
+                    Span::styled(tool.clone(), Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::UNDERLINED)),
                     Span::styled(format!("({})", args_display), theme::style_dim()),
                     dry_tag,
                 ]));
             }
 
             ChatLine::ToolResultLine { success, preview, duration_ms } => {
-                let icon = if *success { "     ✅ " } else { "     ❌ " };
-                let icon_style = if *success { theme::style_success() } else { theme::style_error() };
+                // JSX: 成功用 ● 绿色，失败用 ● 红色
+                let icon = if *success { "  ● " } else { "  ● " };
+                let icon_style = if *success {
+                    Style::default().fg(theme::CLR_GREEN)
+                } else {
+                    Style::default().fg(theme::CLR_RED)
+                };
                 let text_style = if *success {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(theme::CLR_FG_MUTED)
                 } else {
                     theme::style_error()
                 };
@@ -109,7 +108,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                     ]));
                 } else {
                     for (i, pl) in preview_lines.iter().enumerate() {
-                        let prefix = if i == 0 { icon } else { "        " };
+                        let prefix = if i == 0 { icon } else { "      " };
                         let duration_span = if i == last_idx {
                             Span::styled(format!("  ({}ms)", duration_ms), theme::style_dim())
                         } else {
@@ -126,14 +125,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
             ChatLine::ErrorLine(msg) => {
                 lines.push(Line::from(vec![
-                    Span::styled("  ⚠️  ", theme::style_error()),
+                    Span::styled("  ● ", Style::default().fg(theme::CLR_RED)),
                     Span::styled(sanitize_output(msg), theme::style_error()),
                 ]));
                 lines.push(Line::from(""));
             }
 
             ChatLine::Separator => {
-                let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
+                let sep = "─".repeat(inner.width.saturating_sub(4) as usize);
                 lines.push(Line::from(Span::styled(sep, theme::style_dim())));
             }
 
@@ -147,34 +146,31 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
-    // spinner 行（thinking 状态）
+    // spinner 行（thinking 状态）- JSX 风格：⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ + "思考中..."
     if state.is_thinking {
         lines.push(Line::from(vec![
             Span::styled(
-                format!("  {} 思考中…", state.spinner_char()),
+                format!("{} 思考中…", state.spinner_char()),
                 Style::default()
-                    .fg(Color::Rgb(150, 150, 200))
-                    .add_modifier(Modifier::ITALIC),
+                    .fg(theme::CLR_CYAN),
             ),
         ]));
     }
 
-    // 空对话时显示欢迎提示
+    // 空对话时显示欢迎提示（匹配 JSX 简洁风格）
     if state.messages.is_empty() && !state.is_thinking {
         let welcome = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  欢迎使用 jij！",
-                Style::default().fg(Color::Rgb(180, 180, 255)).add_modifier(Modifier::BOLD),
+                "  agent-unix 已就绪。用自然语言描述你的需求。",
+                Style::default().fg(theme::CLR_FG_MUTED),
             )),
             Line::from(""),
-            Line::from(Span::styled("  你可以这样说：", theme::style_dim())),
-            Line::from(Span::styled("    • 查看当前磁盘使用情况", theme::style_dim())),
-            Line::from(Span::styled("    • 帮我把 nginx 配置到 8080 端口", theme::style_dim())),
-            Line::from(Span::styled("    • 列出所有正在运行的进程", theme::style_dim())),
-            Line::from(Span::styled("    • 清理 /var/log 下超过 30 天的日志", theme::style_dim())),
+            Line::from(Span::styled("  示例：", theme::style_dim())),
+            Line::from(Span::styled("    • 查看磁盘使用情况", theme::style_dim())),
+            Line::from(Span::styled("    • 列出内存占用最高的进程", theme::style_dim())),
+            Line::from(Span::styled("    • 把 nginx 配置到 8080 端口", theme::style_dim())),
             Line::from(""),
-            Line::from(Span::styled("  快捷键：/undo 撤销  /history 历史  /exit 退出", theme::style_dim())),
         ];
         let para = Paragraph::new(welcome)
             .wrap(Wrap { trim: false });

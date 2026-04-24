@@ -374,7 +374,7 @@ pub async fn run_tui(
                 }
             }
 
-            // Spinner 动画 + 复制通知倒计时 + tips 轮播
+            // Spinner 动画 + 复制通知倒计时 + 进程列表刷新
             _ = spinner_tick.tick() => {
                 if state.is_thinking {
                     state.tick_spinner();
@@ -382,7 +382,7 @@ pub async fn run_tui(
                 if state.copy_notice_frames > 0 {
                     state.tick_copy_notice();
                 }
-                state.tick_tips();
+                state.tick_process_list();
             }
 
             // 键盘/终端事件
@@ -501,6 +501,16 @@ async fn handle_event(
                     if state.copy_last_reply_to_clipboard() {
                         state.copy_notice_frames = 40; // ~2.6s at 60fps
                     }
+                }
+
+                // Tab：循环切换标签页
+                (KeyModifiers::NONE, KeyCode::Tab) => {
+                    state.active_tab = state.active_tab.next();
+                }
+
+                // Ctrl+B：折叠/展开右侧面板
+                (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
+                    state.side_collapsed = !state.side_collapsed;
                 }
 
                 // 发送输入

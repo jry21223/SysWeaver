@@ -9,66 +9,36 @@ use ratatui::{
 use crate::ui::state::AppState;
 use crate::ui::theme;
 
-// 右上角轮播 tips（每条约 5 秒，80ms * 62 ≈ 5s）
-const TIPS: &[&str] = &[
-    "试试: 查看系统负载",
-    "试试: 找出大文件 >100M",
-    "试试: 列出监听端口",
-    "试试: 查看最近登录记录",
-    "试试: 内存占用 Top5 进程",
-    "试试: 检查磁盘健康状态",
-    "Ctrl+P/N  浏览输入历史",
-    "Ctrl+Y    复制 Agent 回复",
-    "PgUp/Dn   滚动对话历史",
-    "/status   实时系统快照",
-    "/report   生成健康报告",
-    "/export   导出对话记录",
-    "/playbook 保存常用操作",
-];
-
-const TIPS_TICKS_PER_SLIDE: u64 = 62; // 62 × 80ms ≈ 5 秒
+// 右侧固定快捷键区，显示宽度：/exit(5) + ` │ `(3) + Ctrl+Y(6) + ` `(1)
+// + 复制(4=2CJK×2) + ` │ `(3) + PgUp/Dn(8) + 两端各1空格 ≈ 33
+const RIGHT_WIDTH: u16 = 33;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let mode_color = match state.mode.as_str() {
-        "safe"   => Color::Rgb(80, 220, 120),
-        "normal" => Color::Rgb(100, 160, 255),
-        "auto"   => Color::Rgb(255, 200, 50),
-        _        => Color::Gray,
-    };
-
     // ── 左侧内容 ─────────────────────────────────────────────────────────
     let mut left_spans = vec![
-        // 用户名徽章（左上角）
         Span::styled(
             format!(" ● {} ", state.username),
             Style::default()
-                .fg(Color::Rgb(212, 160, 74))   // Tokyo Night amber
+                .fg(Color::Rgb(212, 160, 74))
                 .bg(theme::CLR_STATUSBAR)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" │ ", theme::style_dim()),
-        Span::styled(" 🤖 jij ", Style::default()
-            .fg(Color::White)
-            .bg(theme::CLR_STATUSBAR)
-            .add_modifier(Modifier::BOLD)),
-        Span::styled(" │ ", theme::style_dim()),
         Span::styled(
             format!(" {} ", state.mode.to_uppercase()),
-            Style::default().fg(Color::Black).bg(mode_color).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Black).bg(theme::CLR_AMBER).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" │ ", theme::style_dim()),
+        Span::styled(" ", theme::style_statusbar()),
         Span::styled(
-            format!(" {} ", state.provider),
+            format!("{}", state.provider),
             Style::default().fg(Color::Rgb(180, 180, 200)).bg(theme::CLR_STATUSBAR),
         ),
-        Span::styled(" │ ", theme::style_dim()),
         Span::styled(
-            format!(" sess:{} ", &state.session_id[..8.min(state.session_id.len())]),
+            format!("  sess:{} ", &state.session_id[..8.min(state.session_id.len())]),
             theme::style_dim(),
         ),
     ];
 
-    // 若正在思考，显示步骤进度 + spinner
+    // 思考中：显示 spinner + 步骤
     if state.is_thinking {
         left_spans.push(Span::styled(" │ ", theme::style_dim()));
         if state.task_step > 0 {
@@ -120,32 +90,32 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         ));
     }
 
-    // ── 右侧内容：轮播 tips ───────────────────────────────────────────────
-    let tip_idx = ((state.tips_tick / TIPS_TICKS_PER_SLIDE) as usize) % TIPS.len();
-    let tip_text = TIPS[tip_idx];
-
+    // ── 右侧固定快捷键（匹配 JSX StatusBar 设计）────────────────────────
+    let dim = theme::style_dim();
+    let sep = Span::styled(" │ ", dim);
     let right_spans = vec![
-        Span::styled(
-            format!(" 💡 {} ", tip_text),
-            Style::default()
-                .fg(Color::Rgb(130, 170, 130))
-                .bg(theme::CLR_STATUSBAR),
-        ),
+        Span::styled(" /exit", dim),
+        sep.clone(),
+        Span::styled("Ctrl+Y", dim),
+        Span::styled(" 复制", Style::default().fg(Color::Rgb(130, 170, 130)).bg(theme::CLR_STATUSBAR)),
+        sep.clone(),
+        Span::styled("PgUp/Dn ", dim),
     ];
 
-    // ── 布局：左填充 / 右固定宽度 ────────────────────────────────────────
-    let tip_display_width = (tip_text.chars().count() + 5) as u16; // " 💡 " + " "
+    // ── 布局 ──────────────────────────────────────────────────────────────
+    let right_w = RIGHT_WIDTH.min(area.width / 2);
     let [left_area, right_area] = Layout::horizontal([
         Constraint::Fill(1),
-        Constraint::Length(tip_display_width.max(20).min(area.width / 2)),
+        Constraint::Length(right_w),
     ])
     .areas(area);
 
-    let left_para = Paragraph::new(Line::from(left_spans))
-        .style(theme::style_statusbar());
-    let right_para = Paragraph::new(Line::from(right_spans))
-        .style(theme::style_statusbar());
-
-    f.render_widget(left_para, left_area);
-    f.render_widget(right_para, right_area);
+    f.render_widget(
+        Paragraph::new(Line::from(left_spans)).style(theme::style_statusbar()),
+        left_area,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(right_spans)).style(theme::style_statusbar()),
+        right_area,
+    );
 }

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 
-use super::state::AppState;
+use super::state::{ActiveTab, AppState};
 use super::widgets as ui_widgets;
 
 /// 最小终端尺寸
@@ -41,30 +41,45 @@ pub fn draw(f: &mut Frame, state: &AppState) {
         return;
     }
 
-    // ── 垂直切分：状态栏(1) / 主体(fill) / 输入区(4) ────────────────────
-    let [statusbar_area, main_area, input_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(4),
+    // ── 垂直切分：状态栏(1) / TabBar(2) / 主体(fill) / 输入区(3) ─────────────
+    let [statusbar_area, tabbar_area, main_area, input_area] = Layout::vertical([
+        Constraint::Length(1),      // StatusBar
+        Constraint::Length(1),      // TabBar（per-tab 下划线）
+        Constraint::Fill(1),        // 主内容区
+        Constraint::Length(3),      // InputBar（精简为 3 行）
     ])
     .areas(area);
 
-    // ── 主体水平切：聊天区(65%) / 状态面板(35%) ─────────────────────────
-    let [chat_area, status_area] = Layout::horizontal([
-        Constraint::Percentage(65),
-        Constraint::Percentage(35),
-    ])
-    .areas(main_area);
+    // ── 主体水平切：聊天区 / 状态面板 ─────────────────────────────────────
+    let (chat_w, status_w) = if state.side_collapsed {
+        (Constraint::Fill(1), Constraint::Length(3))
+    } else {
+        (Constraint::Percentage(70), Constraint::Percentage(30))
+    };
+    let [chat_area, status_area] =
+        Layout::horizontal([chat_w, status_w]).areas(main_area);
 
     // ── 渲染各区 ─────────────────────────────────────────────────────────
     ui_widgets::statusbar::render(f, statusbar_area, state);
-    ui_widgets::chat::render(f, chat_area, state);
+    ui_widgets::tabbar::render(f, tabbar_area, &state.active_tab);
+
+    // 标签页内容切换
+    match state.active_tab {
+        ActiveTab::Chat => ui_widgets::chat::render(f, chat_area, state),
+        ActiveTab::Monitor => ui_widgets::monitor::render(f, chat_area, state),
+        ActiveTab::History => ui_widgets::history::render(f, chat_area, state),
+    }
+
+    // 侧栏面板
     ui_widgets::status::render(f, status_area, state);
-    ui_widgets::input::render(f, input_area, state);
+
+    // 输入栏仅在对话标签页显示
+    if state.active_tab == ActiveTab::Chat {
+        ui_widgets::input::render(f, input_area, state);
+    }
 
     // ── 弹窗最后渲染（覆盖其他内容）─────────────────────────────────────
     if let Some(modal) = &state.modal {
         ui_widgets::modal::render(f, area, modal);
     }
 }
-
