@@ -71,10 +71,18 @@ impl Tool for ShellTool {
         }
 
         let start = Instant::now();
+
+        // Windows：在子 cmd 进程中切换到 UTF-8 代码页，避免中文输出乱码
+        #[cfg(target_os = "windows")]
+        let win_cmd = format!("chcp 65001 >NUL 2>&1 & {}", command);
+
         let result = timeout(
             Duration::from_secs(timeout_secs),
             if cfg!(windows) {
-                Command::new("cmd").args(["/C", command]).current_dir(working_dir).output()
+                #[cfg(target_os = "windows")]
+                { Command::new("cmd").args(["/C", win_cmd.as_str()]).current_dir(working_dir).output() }
+                #[cfg(not(target_os = "windows"))]
+                { Command::new("cmd").args(["/C", command]).current_dir(working_dir).output() }
             } else {
                 Command::new("sh").args(["-c", command]).current_dir(working_dir).output()
             },

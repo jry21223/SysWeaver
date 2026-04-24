@@ -27,10 +27,16 @@ impl LocalExecutor {
         let dir = working_dir.unwrap_or(if cfg!(windows) { "C:\\" } else { "/" });
         let start = Instant::now();
 
+        #[cfg(target_os = "windows")]
+        let win_cmd = format!("chcp 65001 >NUL 2>&1 & {}", command);
+
         let result = timeout(
             Duration::from_secs(self.timeout_secs),
             if cfg!(windows) {
-                Command::new("cmd").args(["/C", command]).current_dir(dir).output()
+                #[cfg(target_os = "windows")]
+                { Command::new("cmd").args(["/C", win_cmd.as_str()]).current_dir(dir).output() }
+                #[cfg(not(target_os = "windows"))]
+                { Command::new("cmd").args(["/C", command]).current_dir(dir).output() }
             } else {
                 Command::new("sh").args(["-c", command]).current_dir(dir).output()
             },

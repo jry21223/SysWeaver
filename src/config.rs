@@ -100,7 +100,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "Anthropic",
             LlmProviderKind::Anthropic,
             "https://api.anthropic.com",
-            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
             &["ANTHROPIC_API_KEY"],
             &["claude"],
             "Claude（原生 tool_use 支持）",
@@ -110,7 +110,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "OpenAI",
             LlmProviderKind::OpenAiCompatible,
             "https://api.openai.com",
-            "gpt-4o",
+            "gpt-4.1",
             &["OPENAI_API_KEY"],
             &["gpt"],
             "OpenAI GPT 系列",
@@ -120,7 +120,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "OpenRouter",
             LlmProviderKind::OpenAiCompatible,
             "https://openrouter.ai/api",
-            "openai/gpt-4o",
+            "openai/gpt-4.1",
             &["OPENROUTER_API_KEY"],
             &["router"],
             "OpenRouter（多模型聚合）",
@@ -130,7 +130,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "Groq",
             LlmProviderKind::OpenAiCompatible,
             "https://api.groq.com/openai",
-            "llama-3.3-70b-versatile",
+            "llama-4-maverick-17b-128e-instruct",
             &["GROQ_API_KEY"],
             &["llama"],
             "Groq（超快推理）",
@@ -140,7 +140,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "GLM",
             LlmProviderKind::OpenAiCompatible,
             "https://open.bigmodel.cn/api/paas/v4",
-            "glm-4.5",
+            "glm-4-plus",
             &["GLM_API_KEY", "BIGMODEL_API_KEY"],
             &["zhipu", "bigmodel", "智谱"],
             "智谱 GLM（OpenAI-compatible）",
@@ -150,7 +150,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "Kimi",
             LlmProviderKind::OpenAiCompatible,
             "https://api.moonshot.cn/v1",
-            "moonshot-v1-128k",
+            "kimi-k2",
             &["KIMI_API_KEY", "MOONSHOT_API_KEY"],
             &["moonshot", "月之暗面"],
             "Moonshot Kimi（长上下文）",
@@ -160,7 +160,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "DeepSeek",
             LlmProviderKind::OpenAiCompatible,
             "https://api.deepseek.com",
-            "deepseek-chat",
+            "deepseek-v3",
             &["DEEPSEEK_API_KEY"],
             &["ds"],
             "DeepSeek（国产大模型）",
@@ -180,7 +180,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "Bailian",
             LlmProviderKind::OpenAiCompatible,
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "qwen-coding-plus",
+            "qwen3-235b-a22b",
             &["BAILIAN_API_KEY", "DASHSCOPE_API_KEY"],
             &["qwen", "qwen-coding-plan", "codingplan", "百炼", "dashscope"],
             "阿里云百炼（Qwen Coding）",
@@ -447,9 +447,9 @@ impl LlmConfig {
 
 fn default_model_for(provider_kind: LlmProviderKind) -> String {
     if provider_kind == LlmProviderKind::Anthropic {
-        "claude-sonnet-4-5".to_string()
+        "claude-sonnet-4-6".to_string()
     } else {
-        "gpt-4o".to_string()
+        "gpt-4.1".to_string()
     }
 }
 

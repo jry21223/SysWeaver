@@ -1,4 +1,5 @@
 mod agent;
+mod auto_api_detect;
 mod config;
 mod context;
 mod executor;
@@ -24,7 +25,7 @@ use config::{LlmConfig, get_provider_presets};
 use executor::ssh::SshConfig;
 use playbook::{PlaybookManager, PlaybookSource};
 use safety::audit::should_persist_input;
-use user_config::{delete_config, interactive_config, show_current_config};
+use user_config::{delete_config, interactive_config, show_current_config, try_auto_detect_with_consent};
 
 #[derive(Parser)]
 #[command(
@@ -97,6 +98,14 @@ struct Cli {
     /// SSH 身份文件路径（与 --ssh 一起使用）
     #[arg(long, global = true)]
     ssh_key: Option<String>,
+
+    /// 强制本地模式：跳过启动时的 local/ssh 交互选择
+    #[arg(long, global = true)]
+    local: bool,
+
+    /// 跳过启动时的 local/ssh 交互选择（适用于脚本/非交互场景）
+    #[arg(long, global = true)]
+    no_prompt: bool,
 }
 
 #[derive(Subcommand)]
@@ -204,6 +213,9 @@ enum ChatInputAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Windows：将控制台代码页设为 UTF-8，避免中文乱码
+    enable_utf8_console();
+
     let cli = Cli::parse();
 
     // 初始化日志
@@ -327,9 +339,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Info => {
-            println!("🤖 jij v{}", env!("CARGO_PKG_VERSION"));
-            println!("   AI Hackathon 2026 · 超聚变 αFUSION 预赛");
-            println!();
+            print_banner();
             println!("⏳ 正在采集系统信息…");
             let ctx = context::system_scan::scan().await;
             println!();
@@ -362,19 +372,67 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let llm_config = LlmConfig::load(
+            let load_result = LlmConfig::load(
                 cli.provider.as_deref(),
                 cli.model.as_deref(),
                 cli.base_url.as_deref(),
                 cli.api_key.as_deref(),
-            ).unwrap_or_else(|e| {
-                eprintln!();
-                eprintln!("⚠️  LLM 配置加载失败");
-                eprintln!();
-                eprintln!("   {}", e);
-                eprintln!();
-                std::process::exit(1);
-            });
+            );
+
+            let llm_config = match load_result {
+                Ok(cfg) => cfg,
+                Err(load_err) => {
+                    // 交互式终端：先尝试从本地 AI 工具配置文件自动导入 Key
+                    if is_tty() {
+                        match try_auto_detect_with_consent() {
+                            Ok(Some(_)) => {
+                                // 已保存到 ~/.jij/config.json，重新加载
+                                match LlmConfig::load(
+                                    cli.provider.as_deref(),
+                                    cli.model.as_deref(),
+                                    cli.base_url.as_deref(),
+                                    cli.api_key.as_deref(),
+                                ) {
+                                    Ok(cfg) => cfg,
+                                    Err(e2) => {
+                                        eprintln!();
+                                        eprintln!("⚠️  LLM 配置加载失败（自动检测后）");
+                                        eprintln!("   {}", e2);
+                                        eprintln!();
+                                        eprintln!("💡 请运行 jij config --setup 手动配置");
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                // 用户拒绝或无文件，回退到原始错误
+                                eprintln!();
+                                eprintln!("⚠️  LLM 配置加载失败");
+                                eprintln!();
+                                eprintln!("   {}", load_err);
+                                eprintln!();
+                                eprintln!("💡 快速配置：jij config --setup");
+                                std::process::exit(1);
+                            }
+                            Err(_) => {
+                                // Ctrl-C 或检测出错，安静退出
+                                eprintln!();
+                                eprintln!("⚠️  LLM 配置加载失败");
+                                eprintln!("   {}", load_err);
+                                eprintln!();
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        eprintln!();
+                        eprintln!("⚠️  LLM 配置加载失败");
+                        eprintln!();
+                        eprintln!("   {}", load_err);
+                        eprintln!();
+                        std::process::exit(1);
+                    }
+                }
+            };
 
             info!("LLM Provider: {} @ {} (model: {})",
                 llm_config.provider_kind,
@@ -382,14 +440,26 @@ async fn main() -> Result<()> {
                 llm_config.model
             );
 
-            // 构建 SSH 配置（如果指定）
-            let ssh_config = cli.ssh.as_ref().map(|target| {
+            // 构建 SSH 配置（优先使用 CLI 参数，否则根据上下文决定是否弹出交互菜单）
+            let ssh_config = if let Some(target) = cli.ssh.as_ref() {
                 let mut cfg = SshConfig::new(target);
                 if let Some(ref key) = cli.ssh_key {
                     cfg.identity_file = Some(key.clone());
                 }
-                cfg
-            });
+                Some(cfg)
+            } else if matches!(cli.command, Commands::Chat)
+                && !cli.local
+                && !cli.no_prompt
+                && is_tty()
+            {
+                // 启动时让用户选择 Local / SSH
+                match prompt_runtime_mode()? {
+                    RuntimeMode::Local => None,
+                    RuntimeMode::Ssh(cfg) => Some(cfg),
+                }
+            } else {
+                None
+            };
 
             // 远程模式提示
             if let Some(ref ssh) = ssh_config {
@@ -414,18 +484,27 @@ async fn main() -> Result<()> {
                     let ctx = context::system_scan::scan().await;
 
                     if cli.no_tui {
-                        // ── CLI fallback 模式 ─────────────────────────────
-                        let mode_label = if ssh_config.is_some() { "SSH 远程模式" } else { "CLI 本地模式" };
-                        println!("🤖 jij v{}  [{}]", env!("CARGO_PKG_VERSION"), mode_label);
-                        println!("   Provider: {} @ {}", llm_config.provider_kind, llm_config.base_url);
+                        // ── CLI fallback 模式（美化版）─────────────────────
+                        let mode_label = if ssh_config.is_some() { "🔗 SSH 远程模式" } else { "💻 本地模式" };
+                        let version = env!("CARGO_PKG_VERSION");
                         println!();
-                        println!("【系统环境】");
-                        println!("   OS：{}  主机：{}", ctx.os_info, ctx.hostname);
-                        println!("   CPU：{}  内存：{}", ctx.cpu_info, ctx.memory_info);
-                        println!("   磁盘：{}  包管理器：{}", ctx.disk_info, ctx.package_manager);
-                        println!("   网络：{}", ctx.network_info);
+                        println!("\x1b[36m╭─────────────────────────────────────────────────────────╮\x1b[0m");
+                        println!("\x1b[36m│\x1b[0m  🤖 \x1b[1mjij v{:<6}\x1b[0m  \x1b[2m│\x1b[0m  {:<35}  \x1b[36m│\x1b[0m", version, mode_label);
+                        println!("\x1b[36m│\x1b[0m  \x1b[2mAI Hackathon 2026 · 超聚变 αFUSION 预赛\x1b[0m               \x1b[36m│\x1b[0m");
+                        println!("\x1b[36m╰─────────────────────────────────────────────────────────╯\x1b[0m");
                         println!();
-                        println!("   输入 '/help' 查看命令，'/exit' 退出\n");
+                        println!("  \x1b[2mProvider\x1b[0m  {} @ {}", llm_config.provider_kind, llm_config.base_url);
+                        println!("  \x1b[2mModel\x1b[0m     {}", llm_config.model);
+                        println!();
+                        println!("  \x1b[1m📊 系统环境\x1b[0m");
+                        println!("    OS       {}   主机  {}", ctx.os_info, ctx.hostname);
+                        println!("    CPU      {}", ctx.cpu_info);
+                        println!("    内存     {}", ctx.memory_info);
+                        println!("    磁盘     {}", ctx.disk_info);
+                        println!("    网络     {}", ctx.network_info);
+                        println!("    包管理器 {}", ctx.package_manager);
+                        println!();
+                        println!("  \x1b[2m输入 \x1b[1;36m/help\x1b[0;2m 查看命令，\x1b[1;36m/exit\x1b[0;2m 退出\x1b[0m\n");
                         run_chat_loop(&llm_config, &cli.mode, ctx, ssh_config).await?;
                     } else {
                         // ── TUI 模式（默认）──────────────────────────────
@@ -447,6 +526,137 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 在 Windows 上将控制台代码页强制设为 UTF-8（CP 65001），
+/// 解决中文 / CJK 字符在默认 GBK/CP936 控制台下显示乱码的问题。
+/// 非 Windows 平台为空操作。
+fn enable_utf8_console() {
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+            fn SetConsoleCP(wCodePageID: u32) -> i32;
+        }
+        // SAFETY: Win32 API，仅改变当前进程的控制台代码页，无内存安全风险
+        unsafe {
+            SetConsoleOutputCP(65001);
+            SetConsoleCP(65001);
+        }
+    }
+}
+
+/// 运行时模式选择（启动时交互选择）
+#[derive(Debug, Clone)]
+enum RuntimeMode {
+    Local,
+    Ssh(SshConfig),
+}
+
+/// 检测标准输入是否连接到 TTY（非 TTY 场景如管道/脚本应跳过交互）
+fn is_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// 打印启动 Banner（ASCII Art）
+fn print_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    println!();
+    println!("\x1b[36m  ╔══════════════════════════════════════════════════════════╗\x1b[0m");
+    println!("\x1b[36m  ║                                                          ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m     _  _  _ \x1b[0;36m                                         ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m    (_)(_)(_)\x1b[0;36m     \x1b[1;37mjij — 自然语言操作系统代理\x1b[0;36m        ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m    | || || |\x1b[0;36m     \x1b[2;37mAI Hackathon 2026 · αFUSION\x1b[0;36m      ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m _  | || || |\x1b[0;36m                                         ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m| |_| || || |\x1b[0;36m     \x1b[2;37mv{:<12}\x1b[0;36m                         ║\x1b[0m", version);
+    println!("\x1b[36m  ║   \x1b[1;35m \\___/ |_||_|\x1b[0;36m                                         ║\x1b[0m");
+    println!("\x1b[36m  ║                                                          ║\x1b[0m");
+    println!("\x1b[36m  ╚══════════════════════════════════════════════════════════╝\x1b[0m");
+    println!();
+}
+
+/// 启动时交互式选择 Local / SSH 模式
+fn prompt_runtime_mode() -> Result<RuntimeMode> {
+    use std::io::{self, Write};
+
+    print_banner();
+
+    println!("  \x1b[1;33m▶ 选择运行模式\x1b[0m");
+    println!();
+    println!("    \x1b[1;32m[1]\x1b[0m \x1b[1m💻 本地模式\x1b[0m      \x1b[2m— 管理当前机器（默认）\x1b[0m");
+    println!("    \x1b[1;32m[2]\x1b[0m \x1b[1m🔗 SSH 远程模式\x1b[0m  \x1b[2m— 通过 SSH 连接到远程服务器\x1b[0m");
+    println!("    \x1b[1;32m[q]\x1b[0m \x1b[1m🚪 退出\x1b[0m");
+    println!();
+    print!("  \x1b[36m选择 ›\x1b[0m ");
+    io::stdout().flush().ok();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let choice = input.trim().to_lowercase();
+
+    match choice.as_str() {
+        "" | "1" | "l" | "local" => {
+            println!("\n  \x1b[32m✓\x1b[0m 已选择 \x1b[1m本地模式\x1b[0m\n");
+            Ok(RuntimeMode::Local)
+        }
+        "2" | "s" | "ssh" | "remote" => {
+            let cfg = prompt_ssh_config()?;
+            Ok(RuntimeMode::Ssh(cfg))
+        }
+        "q" | "quit" | "exit" => {
+            println!("\n  👋 再见！\n");
+            std::process::exit(0);
+        }
+        _ => {
+            println!("\n  \x1b[33m⚠\x1b[0m 无效选项，默认使用本地模式\n");
+            Ok(RuntimeMode::Local)
+        }
+    }
+}
+
+/// 交互式收集 SSH 配置
+fn prompt_ssh_config() -> Result<SshConfig> {
+    use std::io::{self, Write};
+
+    println!("\n  \x1b[1;33m▶ SSH 远程配置\x1b[0m");
+    println!();
+
+    // 目标地址
+    print!("  \x1b[36m目标地址\x1b[0m \x1b[2m(格式: user@host 或 user@host:port)\x1b[0m\n  › ");
+    io::stdout().flush().ok();
+    let mut target = String::new();
+    io::stdin().read_line(&mut target)?;
+    let target = target.trim().to_string();
+
+    if target.is_empty() {
+        return Err(anyhow!("SSH 目标地址不能为空"));
+    }
+
+    let mut cfg = SshConfig::new(&target);
+
+    // 身份文件（可选）
+    let default_key = std::env::var("HOME")
+        .ok()
+        .map(|h| format!("{}/.ssh/id_rsa", h));
+
+    print!(
+        "  \x1b[36m身份文件\x1b[0m \x1b[2m(回车使用默认 {})\x1b[0m\n  › ",
+        default_key.as_deref().unwrap_or("~/.ssh/id_rsa")
+    );
+    io::stdout().flush().ok();
+    let mut key = String::new();
+    io::stdin().read_line(&mut key)?;
+    let key = key.trim();
+    if !key.is_empty() {
+        cfg.identity_file = Some(key.to_string());
+    }
+
+    println!(
+        "\n  \x1b[32m✓\x1b[0m 已配置 SSH 远程：\x1b[1m{}\x1b[0m\n",
+        cfg.display()
+    );
+    Ok(cfg)
 }
 
 async fn run_chat_loop(

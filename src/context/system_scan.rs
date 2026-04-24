@@ -6,7 +6,9 @@ use tokio::process::Command;
 pub async fn scan() -> SystemContext {
     let run = |cmd: &'static str| async move {
         let out = if cfg!(windows) {
-            Command::new("cmd").args(["/C", cmd]).output().await
+            // 在子进程中也切换到 UTF-8（CP 65001），防止中文命令输出乱码
+            let utf8_cmd = format!("chcp 65001 >NUL 2>&1 & {}", cmd);
+            Command::new("cmd").args(["/C", utf8_cmd.as_str()]).output().await
         } else {
             Command::new("sh").arg("-c").arg(cmd).output().await
         };

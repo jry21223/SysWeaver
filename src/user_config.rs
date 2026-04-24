@@ -3,6 +3,7 @@ use inquire::{Confirm, Password, Select, Text};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::auto_api_detect::{mask_key, read_and_extract, scan_for_configs};
 use crate::config::{
     ProviderPreset, find_preset, get_provider_presets, validate_base_url, validate_model,
 };
@@ -174,6 +175,21 @@ pub fn interactive_config(initial_provider: Option<&str>) -> Result<UserConfig> 
     println!("══════════════════════════════════════════════════════");
     println!();
 
+    // 快速路径：若检测到本地 AI 工具配置文件，优先提示自动导入
+    let found = scan_for_configs();
+    if !found.is_empty() {
+        let try_auto = Confirm::new("🔍 检测到本地 AI 工具配置文件，是否尝试自动导入 API Key？")
+            .with_default(true)
+            .prompt()?;
+        if try_auto {
+            match try_auto_detect_with_consent_inner(&found) {
+                Ok(Some(config)) => return Ok(config),
+                Ok(None) => println!("  ↳ 未提取到有效 Key，继续手动配置\n"),
+                Err(e) => println!("  ↳ 自动检测出错（{}），继续手动配置\n", e),
+            }
+        }
+    }
+
     let selected = prompt_provider(initial_provider)?;
 
     println!();
@@ -321,4 +337,67 @@ pub fn delete_config() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 公开的完整授权 + 检测 + 保存流程。
+/// 扫描已知 AI 工具配置文件 → 询问用户授权 → 提取 Key → 保存到 ~/.jij/config.json。
+/// 返回 Some(UserConfig) 表示成功；None 表示无文件或用户拒绝；Err 表示流程出错。
+pub fn try_auto_detect_with_consent() -> Result<Option<UserConfig>> {
+    let found = scan_for_configs();
+    if found.is_empty() {
+        return Ok(None);
+    }
+
+    println!();
+    println!("🔍 检测到以下 AI 工具配置文件：");
+    for src in &found {
+        println!("   • {} — {}", src.tool_name, src.file_path.display());
+    }
+    println!();
+
+    let consent = Confirm::new("是否允许 jij 读取以上配置文件中的 API Key？")
+        .with_default(true)
+        .prompt()?;
+
+    if !consent {
+        println!("  已跳过自动检测。");
+        return Ok(None);
+    }
+
+    try_auto_detect_with_consent_inner(&found)
+}
+
+/// 内部实现：在已有扫描结果且用户同意的前提下执行提取 + 保存。
+fn try_auto_detect_with_consent_inner(
+    found: &[crate::auto_api_detect::ScanResult],
+) -> Result<Option<UserConfig>> {
+    let detected = read_and_extract(found);
+    if detected.is_empty() {
+        println!("  ⚠️  未在配置文件中找到有效的 API Key。");
+        return Ok(None);
+    }
+
+    // 优先取 anthropic，否则取第一个
+    let chosen = detected.iter()
+        .find(|d| d.provider_name == "anthropic")
+        .or_else(|| detected.first())
+        .expect("detected non-empty, guaranteed by above guard");
+
+    println!(
+        "  ✅ 从 {} 检测到 {} API Key: {}",
+        chosen.tool_name,
+        chosen.provider_name,
+        mask_key(&chosen.api_key),
+    );
+
+    let config = UserConfig {
+        provider: chosen.provider_name.clone(),
+        provider_preset: Some(chosen.provider_name.clone()),
+        base_url: None,
+        model: None,
+        api_key: Some(chosen.api_key.clone()),
+    };
+
+    save_user_config(&config)?;
+    Ok(Some(config))
 }
