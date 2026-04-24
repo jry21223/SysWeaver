@@ -1,4 +1,6 @@
 use crate::agent::memory::SystemContext;
+use crate::executor::ssh::SshConfig;
+use crate::ui::state::ServiceInfo;
 use chrono::Utc;
 use tokio::process::Command;
 
@@ -178,6 +180,158 @@ pub async fn scan() -> SystemContext {
         network_info,
         collected_at: Utc::now(),
     }
+}
+
+/// 通过 SSH 扫描远程主机的系统环境，返回 SystemContext
+pub async fn scan_remote(ssh: &SshConfig) -> SystemContext {
+    let exec = |cmd: String| {
+        let ssh = ssh.clone();
+        async move {
+            match ssh.exec(&cmd).await {
+                Ok((stdout, _, _, _)) => stdout.trim().to_string(),
+                Err(_) => "未知".to_string(),
+            }
+        }
+    };
+
+    let os_info = exec("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -s".to_string()).await;
+    let hostname = exec("hostname".to_string()).await;
+
+    let cpu_info = exec("cores=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 0); model=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown); echo \"${cores} cores, ${model}\"".to_string()).await;
+
+    let memory_info = exec("free -h 2>/dev/null | grep Mem | awk '{print $2\" total, \"$3\" used\"}' || vm_stat 2>/dev/null | head -5".to_string()).await;
+
+    let disk_info = exec("df -k / 2>/dev/null | tail -1 | awk '{printf \"%.0fG total, %.1fG free, %s used\", $2/976562.5, $4/976562.5, $5}'".to_string()).await;
+
+    let services_raw = exec("systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | sed 's/.service//' | head -10 || launchctl list 2>/dev/null | awk 'NF>=3 && $1~/^[0-9]+$/{print $3}' | grep -vE '^com\\.apple\\.' | head -10".to_string()).await;
+    let running_services: Vec<String> = services_raw
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let network_info = exec("ips=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -3 | tr '\\n' ' '); ports=$(ss -tlnp 2>/dev/null | awk 'NR>1{print $4}' | awk -F: '{print $NF}' | sort -nu | head -6 | tr '\\n' ','); echo \"IP:${ips:-127.0.0.1} 监听端口:${ports:-无}\"".to_string()).await;
+
+    let package_manager = {
+        let pm_raw = exec("which apt dnf yum brew 2>/dev/null | head -1".to_string()).await;
+        if pm_raw.contains("apt") { "apt".to_string() }
+        else if pm_raw.contains("dnf") { "dnf".to_string() }
+        else if pm_raw.contains("yum") { "yum".to_string() }
+        else if pm_raw.contains("brew") { "brew".to_string() }
+        else { "unknown".to_string() }
+    };
+
+    SystemContext {
+        os_info,
+        hostname,
+        cpu_info,
+        memory_info,
+        disk_info,
+        running_services,
+        package_manager,
+        network_info,
+        collected_at: Utc::now(),
+    }
+}
+
+/// 获取本地系统真实运行的服务列表，按 CPU 占用排序。
+/// 输出格式：cpu_pct|mem_mb|service_name
+pub async fn get_service_status() -> Vec<ServiceInfo> {
+    let cmd = if cfg!(target_os = "macos") {
+        // macOS：launchctl list 取 PID + label，过滤掉 Apple 内部服务，
+        // 然后用 ps 批量获取 CPU/MEM
+        concat!(
+            "launchctl list 2>/dev/null",
+            " | awk 'NF>=3 && $1~/^[0-9]/ && !/com\\.apple\\./",
+            " && !/application\\./{print $1, $3}'",
+            " | head -20",
+            " | while read pid label; do",
+            "   stats=$(ps -p \"$pid\" -o pcpu=,rss= 2>/dev/null | xargs);",
+            "   [ -z \"$stats\" ] && continue;",
+            "   cpu=$(echo $stats | awk '{print $1}');",
+            "   mem=$(echo $stats | awk '{printf \"%.0f\", $2/1024}');",
+            "   name=$(echo $label | awk -F. '{print $NF}');",
+            "   echo \"${cpu:-0}|${mem:-0}|$name\";",
+            " done",
+            " | sort -t'|' -k1 -rn | head -8"
+        )
+    } else {
+        // Linux：systemctl 取运行中服务 → MainPID → ps 获取 CPU/MEM
+        concat!(
+            "systemctl list-units --type=service --state=running",
+            " --no-pager --no-legend 2>/dev/null",
+            " | awk '{name=$1; gsub(/\\.service$/,\"\",name); print name}'",
+            " | head -20",
+            " | while read n; do",
+            "   pid=$(systemctl show \"${n}.service\"",
+            "         --property=MainPID --value 2>/dev/null | tr -d '[:space:]');",
+            "   [ \"${pid:-0}\" -gt 0 ] 2>/dev/null || continue;",
+            "   stats=$(ps -p \"$pid\" -o pcpu=,rss= 2>/dev/null | tail -1 | xargs);",
+            "   [ -z \"$stats\" ] && continue;",
+            "   cpu=$(echo $stats | awk '{print $1}');",
+            "   mem=$(echo $stats | awk '{printf \"%.0f\", $2/1024}');",
+            "   echo \"${cpu:-0}|${mem:-0}|$n\";",
+            " done",
+            " | sort -t'|' -k1 -rn | head -8"
+        )
+    };
+
+    let out = Command::new("sh").arg("-c").arg(cmd).output().await;
+    parse_service_lines(out.ok().as_ref().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).as_deref().unwrap_or(""))
+}
+
+/// 通过 SSH 获取远程主机的真实运行服务，按 CPU 排序
+pub async fn get_remote_service_status(ssh: &SshConfig) -> Vec<ServiceInfo> {
+    // 单次 SSH 连接执行，兼容 Linux/macOS 远程
+    let cmd = concat!(
+        "if command -v systemctl >/dev/null 2>&1; then",
+        "  systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null",
+        "  | awk '{name=$1; gsub(/\\.service$/,\"\",name); print name}' | head -20",
+        "  | while read n; do",
+        "      pid=$(systemctl show \"${n}.service\" --property=MainPID --value 2>/dev/null | tr -d '[:space:]');",
+        "      [ \"${pid:-0}\" -gt 0 ] 2>/dev/null || continue;",
+        "      stats=$(ps -p \"$pid\" -o pcpu=,rss= 2>/dev/null | tail -1 | xargs);",
+        "      [ -z \"$stats\" ] && continue;",
+        "      cpu=$(echo $stats | awk '{print $1}');",
+        "      mem=$(echo $stats | awk '{printf \"%.0f\", $2/1024}');",
+        "      echo \"${cpu:-0}|${mem:-0}|$n\";",
+        "  done",
+        "else",
+        "  launchctl list 2>/dev/null",
+        "  | awk 'NF>=3 && $1~/^[0-9]/ && !/com\\.apple\\./{print $1, $3}' | head -20",
+        "  | while read pid label; do",
+        "      stats=$(ps -p \"$pid\" -o pcpu=,rss= 2>/dev/null | xargs);",
+        "      [ -z \"$stats\" ] && continue;",
+        "      cpu=$(echo $stats | awk '{print $1}');",
+        "      mem=$(echo $stats | awk '{printf \"%.0f\", $2/1024}');",
+        "      name=$(echo $label | awk -F. '{print $NF}');",
+        "      echo \"${cpu:-0}|${mem:-0}|$name\";",
+        "  done",
+        "fi",
+        " | sort -t'|' -k1 -rn | head -8"
+    );
+
+    match ssh.exec(cmd).await {
+        Ok((stdout, _, _, _)) => parse_service_lines(&stdout),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 解析 "cpu|mem_mb|name" 格式的行，返回 ServiceInfo 列表
+fn parse_service_lines(output: &str) -> Vec<ServiceInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let parts: Vec<&str> = line.splitn(3, '|').collect();
+            if parts.len() != 3 { return None; }
+            let cpu_pct: f32 = parts[0].trim().parse().ok()?;
+            let mem_mb: f32 = parts[1].trim().parse().unwrap_or(0.0);
+            let name = parts[2].trim().to_string();
+            if name.is_empty() { return None; }
+            Some(ServiceInfo { name, cpu_pct, mem_mb })
+        })
+        .collect()
 }
 
 /// 基于系统上下文做主动异常检测，返回告警消息列表

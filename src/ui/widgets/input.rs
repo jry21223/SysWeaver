@@ -27,16 +27,22 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     // ── 输入行 ────────────────────────────────────────────────────────────
     let prefix = if state.modal.is_some() {
         Span::styled("🔒 ", Style::default().fg(Color::Gray).bg(bg))
+    } else if state.voice_recording {
+        Span::styled("🎙 ", Style::default().fg(theme::CLR_RED).bg(bg))
     } else if state.is_thinking {
         Span::styled("⏳ ", Style::default().fg(theme::CLR_CYAN).bg(bg))
     } else {
-        // JSX: 用户输入用 › 符号，琥珀色
         Span::styled("› ", Style::default().fg(theme::CLR_AMBER).bg(bg))
     };
 
-    let placeholder = if state.input.is_empty() && !state.is_thinking && state.modal.is_none() {
+    let placeholder = if state.voice_recording {
         Span::styled(
-            "输入指令，按 Enter 发送…",
+            "录音中… 再按 F5 停止并转写",
+            Style::default().fg(theme::CLR_RED).bg(bg).add_modifier(Modifier::ITALIC),
+        )
+    } else if state.input.is_empty() && !state.is_thinking && state.modal.is_none() {
+        Span::styled(
+            "输入指令，按 Enter 发送…  (F5 语音输入)",
             Style::default().fg(theme::CLR_DIM).bg(bg).add_modifier(Modifier::ITALIC),
         )
     } else {
@@ -44,7 +50,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     // 右侧语音指示器 + Enter 提示
-    let voice_indicator = if state.voice_tts_enabled {
+    let voice_indicator = if state.voice_recording {
+        Span::styled(" 🔴", Style::default().fg(theme::CLR_RED).bg(bg))
+    } else if state.voice_tts_enabled {
         Span::styled(" 🎤", Style::default().fg(theme::CLR_GREEN).bg(bg))
     } else if state.is_remote {
         Span::styled(" 🔇", Style::default().fg(theme::CLR_DIM).bg(bg))
@@ -71,7 +79,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     );
 
     // ── 光标位置 ─────────────────────────────────────────────────────────
-    if state.modal.is_none() && !state.is_thinking {
+    if state.modal.is_none() && !state.is_thinking && !state.voice_recording {
         let prefix_width = 2u16; // "› " 视觉宽度
         let text_before_cursor: String = state.input.chars().take(state.cursor_pos).collect();
         let cursor_x = input_line_area.x

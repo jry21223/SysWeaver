@@ -65,4 +65,10 @@ pub enum AgentEvent {
 
     /// 语音 TTS 开关切换
     VoiceTtsToggle(bool),
+
+    /// 服务状态更新（真实运行服务列表，按 CPU 排序）
+    ServiceStatusUpdate(Vec<crate::ui::state::ServiceInfo>),
+
+    /// 语音 STT 转写结果（填入输入框）
+    VoiceTranscription(String),
 }

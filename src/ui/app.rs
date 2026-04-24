@@ -28,6 +28,12 @@ use crate::ui::{
 use crate::voice::VoiceEngine;
 use crate::watchdog::{AlertSeverity, create_watchdog_system};
 
+// 录音状态（local to run_tui）
+struct RecordingState {
+    child: tokio::process::Child,
+    wav_path: String,
+}
+
 /// TUI 入口：初始化终端 → 启动 agent task → 运行事件循环
 pub async fn run_tui(
     llm_config: LlmConfig,
@@ -132,7 +138,7 @@ pub async fn run_tui(
     let agent_mode = mode.clone();
     let agent_ctx = ctx.clone();
 
-    let agent_ssh = ssh_config;
+    let agent_ssh = ssh_config.clone();
     let is_ssh = agent_ssh.is_some();
     tokio::spawn(async move {
         // 保留副本，供 /clear 命令重建 agent
@@ -368,15 +374,36 @@ pub async fn run_tui(
         }
     });
 
-    // ── SSH 模式：自动触发远程系统扫描 ─────────────────────────────────
+    // ── SSH 模式：直接通过 SSH 扫描远程系统信息（不经过 agent）───────────
     if is_ssh {
-        let _ = input_tx.send("查看远程服务器的系统信息，包括操作系统、主机名、CPU、内存和磁盘使用情况".to_string()).await;
+        if let Some(ref ssh) = ssh_config {
+            let ssh_scan = ssh.clone();
+            let scan_tx = event_tx.clone();
+            tokio::spawn(async move {
+                let ctx = system_scan::scan_remote(&ssh_scan).await;
+                let svcs = system_scan::get_remote_service_status(&ssh_scan).await;
+                let _ = scan_tx.send(AgentEvent::SystemUpdate(ctx)).await;
+                let _ = scan_tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
+            });
+        }
+    } else {
+        // 本地模式：初始化服务状态
+        let svc_tx = event_tx.clone();
+        tokio::spawn(async move {
+            let svcs = system_scan::get_service_status().await;
+            let _ = svc_tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
+        });
     }
 
     // ── 主事件循环 ────────────────────────────────────────────────────────
     let mut event_stream = EventStream::new();
     let mut render_tick = tokio::time::interval(Duration::from_millis(33)); // ~30fps
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(80));
+    // SSH/本地系统信息每 30s 刷新一次
+    let mut system_refresh_tick = tokio::time::interval(Duration::from_secs(30));
+    system_refresh_tick.tick().await; // 跳过第一个立即触发
+    // 录音状态（按 F5 启动/停止）
+    let mut recording: Option<RecordingState> = None;
 
     let result = loop {
         tokio::select! {
@@ -384,6 +411,7 @@ pub async fn run_tui(
             _ = render_tick.tick() => {
                 let needs_render = state.dirty
                     || state.is_thinking
+                    || state.voice_recording
                     || state.copy_notice_frames > 0;
                 if needs_render {
                     if let Err(e) = terminal.draw(|f| renderer::draw(f, &state)) {
@@ -404,9 +432,31 @@ pub async fn run_tui(
                 state.tick_process_list();
             }
 
+            // 30s 系统信息刷新（SSH 或本地）
+            _ = system_refresh_tick.tick() => {
+                let tx = event_tx.clone();
+                if let Some(ref ssh) = ssh_config {
+                    let ssh = ssh.clone();
+                    tokio::spawn(async move {
+                        let ctx = system_scan::scan_remote(&ssh).await;
+                        let svcs = system_scan::get_remote_service_status(&ssh).await;
+                        let _ = tx.send(AgentEvent::SystemUpdate(ctx)).await;
+                        let _ = tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
+                    });
+                } else {
+                    tokio::spawn(async move {
+                        let ctx = system_scan::scan().await;
+                        let svcs = system_scan::get_service_status().await;
+                        let _ = tx.send(AgentEvent::SystemUpdate(ctx)).await;
+                        let _ = tx.send(AgentEvent::ServiceStatusUpdate(svcs)).await;
+                    });
+                }
+            }
+
             // 键盘/终端事件
             Some(Ok(event)) = event_stream.next() => {
-                match handle_event(&mut state, event, &input_tx).await {
+                let term_size = terminal.size().unwrap_or_default();
+                match handle_event(&mut state, event, &input_tx, &event_tx, &mut recording, term_size).await {
                     EventResult::Quit  => break Ok(()),
                     EventResult::Continue => {}
                 }
@@ -447,6 +497,9 @@ async fn handle_event(
     state: &mut AppState,
     event: Event,
     input_tx: &mpsc::Sender<String>,
+    event_tx: &mpsc::Sender<AgentEvent>,
+    recording: &mut Option<RecordingState>,
+    term_size: ratatui::layout::Size,
 ) -> EventResult {
     match event {
         Event::Key(key) => {
@@ -530,6 +583,47 @@ async fn handle_event(
                 // Ctrl+B：折叠/展开右侧面板
                 (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
                     state.side_collapsed = !state.side_collapsed;
+                    state.mark_dirty();
+                }
+
+                // F5：切换语音输入（录音开始/停止并转写）
+                (KeyModifiers::NONE, KeyCode::F(5)) => {
+                    if state.is_thinking || state.modal.is_some() {
+                        return EventResult::Continue;
+                    }
+                    if recording.is_none() {
+                        // 开始录音
+                        match VoiceEngine::start_recording() {
+                            Ok((child, path)) => {
+                                *recording = Some(RecordingState { child, wav_path: path });
+                                state.voice_recording = true;
+                                state.mark_dirty();
+                            }
+                            Err(e) => {
+                                state.push_line(ChatLine::ErrorLine(format!("语音输入启动失败: {}", e)));
+                            }
+                        }
+                    } else {
+                        // 停止录音并转写
+                        if let Some(rec_state) = recording.take() {
+                            state.voice_recording = false;
+                            state.mark_dirty();
+                            let tx = event_tx.clone();
+                            tokio::spawn(async move {
+                                match VoiceEngine::stop_and_transcribe(rec_state.child, &rec_state.wav_path).await {
+                                    Ok(text) if !text.is_empty() => {
+                                        let _ = tx.send(AgentEvent::VoiceTranscription(text)).await;
+                                    }
+                                    Ok(_) => {
+                                        let _ = tx.send(AgentEvent::Error("语音转写结果为空，请重试".to_string())).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(AgentEvent::Error(format!("语音转写失败: {}", e))).await;
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
 
                 // 发送输入
@@ -581,7 +675,7 @@ async fn handle_event(
 
                 // 普通字符输入
                 (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
-                    if !state.is_thinking {
+                    if !state.is_thinking && !state.voice_recording {
                         state.insert_char(c);
                     }
                 }
@@ -594,6 +688,31 @@ async fn handle_event(
             match mouse_event.kind {
                 MouseEventKind::ScrollUp   => state.scroll_up(3),
                 MouseEventKind::ScrollDown => state.scroll_down(3),
+                MouseEventKind::Down(_) => {
+                    // 点击右侧面板的折叠/展开按钮
+                    // 布局：statusbar(1) + tabbar(1) = main_y=2
+                    // 折叠时：右侧 3 列 → 点击整个竖条展开
+                    // 展开时：▷ 在 status_area 的最右列第一行
+                    let col = mouse_event.column;
+                    let row = mouse_event.row;
+                    let main_y: u16 = 2; // statusbar + tabbar
+                    let total_w: u16 = term_size.width;
+                    if state.side_collapsed {
+                        let strip_x = total_w.saturating_sub(3);
+                        if col >= strip_x && row >= main_y {
+                            state.side_collapsed = false;
+                            state.mark_dirty();
+                        }
+                    } else {
+                        // ▷ 按钮在 status 面板的第一行最右侧字符
+                        let status_x = total_w * 70 / 100;
+                        let button_x = total_w.saturating_sub(1);
+                        if col >= status_x && col == button_x && row == main_y {
+                            state.side_collapsed = true;
+                            state.mark_dirty();
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -664,5 +783,17 @@ fn handle_agent_event(state: &mut AppState, event: AgentEvent) {
         AgentEvent::VoiceTtsToggle(enabled) => {
             state.voice_tts_enabled = enabled;
         }
+
+        AgentEvent::ServiceStatusUpdate(svcs) => {
+            state.service_status = svcs;
+            state.mark_dirty();
+        }
+
+        AgentEvent::VoiceTranscription(text) => {
+            state.input = text;
+            state.cursor_pos = state.input.chars().count();
+            state.mark_dirty();
+        }
+
     }
 }

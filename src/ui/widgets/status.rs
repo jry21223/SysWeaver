@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             Line::from(""),
             Line::from(Span::styled(
                 "◁",
-                Style::default().fg(theme::CLR_FG_MUTED),
+                Style::default().fg(theme::CLR_AMBER),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -30,15 +30,16 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(theme::CLR_CYAN),
             )),
         ];
-        // 截断以适应高度
         lines.truncate(inner.height as usize);
-        let collapsed_para = Paragraph::new(lines)
-            .style(Style::default().bg(theme::CLR_BG_PANEL));
-        f.render_widget(collapsed_para, inner);
+        f.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme::CLR_BG_PANEL)),
+            inner,
+        );
         return;
     }
 
     // ── 展开态顶部：SYSTEM 标题 + ▷ 折叠按钮 ──
+    let button_pad = inner.width.saturating_sub(9) as usize;
     let header_line = Line::from(vec![
         Span::styled(
             " SYSTEM ",
@@ -46,8 +47,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 .fg(theme::CLR_DIM)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" ".repeat(inner.width.saturating_sub(9) as usize)),
-        Span::styled("▷", Style::default().fg(theme::CLR_FG_MUTED)),
+        Span::raw(" ".repeat(button_pad)),
+        Span::styled("▷", Style::default().fg(theme::CLR_AMBER)),
     ]);
     f.render_widget(
         Paragraph::new(header_line).style(Style::default().bg(theme::CLR_BG_PANEL)),
@@ -76,38 +77,39 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
 
-    // 解析 memory_info 和 disk_info
     let (mem_used_pct, mem_label) = parse_mem_pct(&ctx.memory_info);
     let (disk_used_pct, disk_label) = parse_disk_pct(&ctx.disk_info);
     let (cpu_cores, cpu_model) = parse_cpu_info(&ctx.cpu_info);
 
-    // ── 构建面板内容（匹配 JSX SystemPanel）──────────────────────────────
+    // 紧凑模式：高度不足时省略空行
+    let compact = body.height < 28;
+    let sep_width = body.width.saturating_sub(2) as usize;
+
     let mut lines: Vec<Line> = Vec::new();
 
-    // 标题：系统状态（青色粗体）
-    lines.push(Line::from(""));
+    // ── 系统状态标题 ──
+    if !compact {
+        lines.push(Line::from(""));
+    }
     lines.push(Line::from(Span::styled(
         "  系统状态",
         Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD),
     )));
 
-    // SSH 远程标注
     if let Some(ref label) = state.remote_label {
         lines.push(Line::from(Span::styled(
             format!("  {}", label),
             Style::default().fg(Color::Rgb(80, 180, 255)),
         )));
-        lines.push(Line::from(""));
     }
 
-    // HOSTNAME 区
-    lines.push(Line::from(""));
+    // ── HOSTNAME ──
+    if !compact { lines.push(Line::from("")); }
     lines.push(Line::from(Span::styled("  HOSTNAME", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD))));
     lines.push(Line::from(Span::styled(
         format!("  {}", ctx.hostname),
         Style::default().fg(theme::CLR_FG),
     )));
-    // OS + CPU 概要
     let os_short: String = ctx.os_info.chars().take(20).collect();
     let cpu_short: String = cpu_model.chars().take(16).collect();
     lines.push(Line::from(Span::styled(
@@ -115,10 +117,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         theme::style_dim(),
     )));
 
-    // CPU 区 — 基于实际采样的 sparkline
-    lines.push(Line::from(""));
+    // ── CPU ──
+    if !compact { lines.push(Line::from("")); }
     lines.push(Line::from(Span::styled("  CPU", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD))));
-
     if state.cpu_history.len() >= 2 {
         let spark = make_sparkline(&state.cpu_history);
         lines.push(Line::from(Span::styled(
@@ -134,62 +135,114 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         lines.push(Line::from(Span::styled("  采集数据中…", theme::style_dim())));
     }
 
-    // MEM 区（HTML 同款变色进度条）
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  MEM", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("    {}", mem_label), Style::default().fg(theme::CLR_FG)),
-    ]));
-    lines.push(make_colored_bar(mem_used_pct, 20));
-
-    // DISK 区
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  DISK", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("    {}", disk_label), Style::default().fg(theme::CLR_FG)),
-    ]));
-    lines.push(make_colored_bar(disk_used_pct, 20));
-
-    // 服务区（分隔线）
-    lines.push(Line::from(""));
-    let sep_width = body.width.saturating_sub(2) as usize;
-    lines.push(Line::from(Span::styled(
-        "─".repeat(sep_width),
-        Style::default().fg(theme::CLR_BORDER),
-    )));
-
-    lines.push(Line::from(Span::styled("  服务", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
-
-    // 服务列表（绿点活跃，灰点不活跃）
-    let svc_max_width = body.width.saturating_sub(8) as usize;
-    for svc in ctx.running_services.iter().take(4) {
-        let is_active = true; // 简化：都视为活跃
+    // ── MEM & DISK（紧凑模式合并显示）──
+    if compact {
         lines.push(Line::from(vec![
-            Span::styled("  ● ", Style::default().fg(if is_active { theme::CLR_GREEN } else { theme::CLR_DIM })),
-            Span::styled(
-                svc.chars().take(svc_max_width).collect::<String>(),
-                Style::default().fg(if is_active { theme::CLR_FG } else { theme::CLR_FG_MUTED }),
-            ),
+            Span::styled("  MEM ", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:.0}%", mem_used_pct * 100.0), bar_color_style(mem_used_pct)),
+            Span::styled("  DSK ", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:.0}%", disk_used_pct * 100.0), bar_color_style(disk_used_pct)),
         ]));
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  MEM", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("    {}", mem_label), Style::default().fg(theme::CLR_FG)),
+        ]));
+        lines.push(make_colored_bar(mem_used_pct, 20));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  DISK", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("    {}", disk_label), Style::default().fg(theme::CLR_FG)),
+        ]));
+        lines.push(make_colored_bar(disk_used_pct, 20));
     }
 
-    // 网络区
+    // ── 服务区 ──
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "─".repeat(sep_width),
         Style::default().fg(theme::CLR_BORDER),
     )));
+    lines.push(Line::from(Span::styled("  服务", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
 
-    lines.push(Line::from(Span::styled("  网络", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
-    // 解析 network_info（格式："IP x.x.x.x / GW x.x.x.x"）
-    lines.push(Line::from(Span::styled(
-        format!("  {}", ctx.network_info.chars().take(30).collect::<String>()),
-        theme::style_dim(),
-    )));
+    let svc_limit = if compact { 4 } else { 6 };
+    // 名称列宽 = 总宽 - "  ● " (4) - " 99.9% " (7) - " 999M" (5) - 边距(2)
+    let name_w = (body.width as usize).saturating_sub(18).max(6);
 
-    // ── 渲染 ───────────────────────────────────────────────────────────────
+    if !state.service_status.is_empty() {
+        for svc in state.service_status.iter().take(svc_limit) {
+            let cpu_str = if svc.cpu_pct >= 0.05 {
+                format!("{:>4.1}%", svc.cpu_pct)
+            } else {
+                "  0% ".to_string()
+            };
+            let mem_str = if svc.mem_mb >= 1024.0 {
+                format!("{:>3.1}G", svc.mem_mb / 1024.0)
+            } else {
+                format!("{:>3.0}M", svc.mem_mb)
+            };
+            let cpu_color = if svc.cpu_pct > 30.0 { theme::CLR_RED }
+                else if svc.cpu_pct > 10.0 { theme::CLR_AMBER }
+                else { theme::CLR_FG_MUTED };
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(theme::CLR_GREEN)),
+                Span::styled(
+                    format!("{:<width$}", svc.name.chars().take(name_w).collect::<String>(), width = name_w),
+                    Style::default().fg(theme::CLR_FG),
+                ),
+                Span::styled(cpu_str, Style::default().fg(cpu_color)),
+                Span::styled(format!(" {}", mem_str), theme::style_dim()),
+            ]));
+        }
+    } else {
+        // 数据还未到达时回退到 running_services（无资源数据）
+        for svc in ctx.running_services.iter().take(svc_limit) {
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(theme::CLR_GREEN)),
+                Span::styled(
+                    svc.chars().take(name_w + 12).collect::<String>(),
+                    Style::default().fg(theme::CLR_FG),
+                ),
+            ]));
+        }
+        if ctx.running_services.is_empty() {
+            lines.push(Line::from(Span::styled("  （正在采集…）", theme::style_dim())));
+        }
+    }
+
+    // ── 网络区（空间充足时才显示）──
+    if body.height >= 22 || !compact {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "─".repeat(sep_width),
+            Style::default().fg(theme::CLR_BORDER),
+        )));
+        lines.push(Line::from(Span::styled("  网络", Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", ctx.network_info.chars().take(30).collect::<String>()),
+            theme::style_dim(),
+        )));
+    }
+
+    // ── 高度裁剪（防止溢出）──
+    lines.truncate(body.height as usize);
+
     let para = Paragraph::new(lines).style(Style::default().bg(theme::CLR_BG_PANEL));
     f.render_widget(para, body);
+}
+
+fn bar_color_style(pct: f64) -> Style {
+    Style::default().fg(if pct > 0.9 {
+        theme::CLR_RED
+    } else if pct > 0.7 {
+        theme::CLR_AMBER
+    } else if pct > 0.5 {
+        Color::Rgb(190, 210, 80)
+    } else {
+        theme::CLR_GREEN
+    })
 }
 
 /// 将 CPU 采样历史转为 sparkline 字符串（▁▂▃▄▅▆▇█）
@@ -206,21 +259,18 @@ fn make_sparkline(samples: &[f32]) -> String {
 }
 
 /// HTML 同款变色进度条 — 按使用率阈值分段着色
-///  >90% 红色 · >70% 琥珀 · >50% 黄绿 · 其余绿色
 fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
     let filled = (pct * width as f64).round() as usize;
-    let empty = width - filled;
-
+    let empty = width.saturating_sub(filled);
     let bar_color = if pct > 0.9 {
         theme::CLR_RED
     } else if pct > 0.7 {
         theme::CLR_AMBER
     } else if pct > 0.5 {
-        Color::Rgb(190, 210, 80) // 黄绿，对应 JSX oklch(0.75 0.16 110)
+        Color::Rgb(190, 210, 80)
     } else {
         theme::CLR_GREEN
     };
-
     Line::from(vec![
         Span::raw("  "),
         Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
@@ -238,10 +288,8 @@ fn parse_mem_pct(info: &str) -> (f64, String) {
     if parts.len() >= 2 {
         let total_str = parts[0].trim().split_whitespace().next().unwrap_or("0");
         let used_str  = parts[1].trim().split_whitespace().next().unwrap_or("0");
-
         let total = parse_size_gb(total_str);
         let used  = parse_size_gb(used_str);
-
         if total > 0.0 {
             let pct = (used / total).min(1.0);
             return (pct, format!("{}/{}G", used_str, total_str));
@@ -261,7 +309,6 @@ fn parse_disk_pct(info: &str) -> (f64, String) {
             return (pct / 100.0, format!("{} free/{}", free_str, total_str));
         }
     }
-    // 回退：找第一个 "XX%" 模式
     for part in info.split_whitespace() {
         let trimmed = part.trim_end_matches('%');
         if let Ok(n) = trimmed.parse::<f64>() {
@@ -277,7 +324,6 @@ fn parse_disk_pct(info: &str) -> (f64, String) {
 fn parse_cpu_info(info: &str) -> (usize, String) {
     let mut cores: usize = 0;
     let mut model = String::new();
-
     for line in info.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() { continue; }
@@ -291,8 +337,6 @@ fn parse_cpu_info(info: &str) -> (usize, String) {
             model = trimmed.to_string();
         }
     }
-
-    // nproc && model 合在一行时
     if cores == 0 && !info.is_empty() {
         let digits: String = info.chars().take_while(|c| c.is_ascii_digit()).collect();
         if !digits.is_empty() {
@@ -300,19 +344,15 @@ fn parse_cpu_info(info: &str) -> (usize, String) {
             model = info[digits.len()..].trim().to_string();
         }
     }
-
     if model.is_empty() {
         model = info.chars().take(20).collect();
     }
-
     (cores, model)
 }
 
 /// 将 "4.2G" / "512M" 转为 GB
 fn parse_size_gb(s: &str) -> f64 {
-    if s.is_empty() {
-        return 0.0;
-    }
+    if s.is_empty() { return 0.0; }
     let (num_part, unit) = if s.ends_with(|c: char| c.is_alphabetic()) {
         let n = &s[..s.len() - 1];
         let u = &s[s.len() - 1..];
@@ -320,7 +360,6 @@ fn parse_size_gb(s: &str) -> f64 {
     } else {
         (s, "G")
     };
-
     let n: f64 = num_part.parse().unwrap_or(0.0);
     match unit.to_uppercase().as_str() {
         "T" => n * 1024.0,

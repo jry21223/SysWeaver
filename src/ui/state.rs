@@ -31,6 +31,14 @@ pub struct ProcessRow {
     pub mem_mb: f32,
 }
 
+/// 服务状态信息（右侧面板使用）
+#[derive(Clone)]
+pub struct ServiceInfo {
+    pub name: String,
+    pub cpu_pct: f32,   // CPU 使用率 %
+    pub mem_mb: f32,    // 内存 MB
+}
+
 /// 整个 TUI 的全量渲染状态（唯一数据源）
 pub struct AppState {
     // ── 渲染脏标记（true = 需要重绘）────────────────────────
@@ -96,6 +104,12 @@ pub struct AppState {
     // ── SSH 远程信息 ─────────────────────────────────────────────
     pub is_remote: bool,
     pub remote_label: Option<String>,
+
+    // ── 服务状态列表（按 CPU 排序的真实运行服务）────────────────
+    pub service_status: Vec<ServiceInfo>,
+
+    // ── 语音输入（STT）────────────────────────────────────────────
+    pub voice_recording: bool,
 }
 
 /// 对话区一行的内容类型
@@ -175,6 +189,8 @@ impl AppState {
             voice_tts_enabled: false,
             is_remote: false,
             remote_label: None,
+            service_status: Vec::new(),
+            voice_recording: false,
         }
     }
 
