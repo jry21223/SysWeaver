@@ -67,6 +67,10 @@ pub async fn run_tui(
 
     let mut state = AppState::new(mode.clone(), provider_short, session_id.clone(), username);
     state.system_ctx = Some(ctx.clone());
+    if let Some(ref ssh) = ssh_config {
+        state.is_remote = true;
+        state.remote_label = Some(format!("🔗 {} (SSH)", ssh.display()));
+    }
 
     // 启动欢迎消息（展示系统环境感知能力）
     let mode_badge = if let Some(ref ssh) = ssh_config {
@@ -129,11 +133,13 @@ pub async fn run_tui(
     let agent_ctx = ctx.clone();
 
     let agent_ssh = ssh_config;
+    let is_ssh = agent_ssh.is_some();
     tokio::spawn(async move {
         // 保留副本，供 /clear 命令重建 agent
         let saved_llm = agent_llm.clone();
         let saved_mode = agent_mode.clone();
         let saved_ssh = agent_ssh.clone();
+        let is_ssh = saved_ssh.is_some();
 
         let mut agent = match agent_ssh {
             Some(ssh) => AgentLoop::new_with_tui_and_ssh(
@@ -329,9 +335,11 @@ pub async fn run_tui(
                         });
                     }
                     let _ = agent_event_tx.send(AgentEvent::AgentReply(reply)).await;
-                    // 刷新系统状态
-                    let new_ctx = system_scan::scan().await;
-                    let _ = agent_event_tx.send(AgentEvent::SystemUpdate(new_ctx)).await;
+                    // 刷新系统状态（SSH 模式下跳过本地扫描）
+                    if !is_ssh {
+                        let new_ctx = system_scan::scan().await;
+                        let _ = agent_event_tx.send(AgentEvent::SystemUpdate(new_ctx)).await;
+                    }
                 }
                 Err(e) => {
                     let _ = agent_event_tx
@@ -360,17 +368,28 @@ pub async fn run_tui(
         }
     });
 
+    // ── SSH 模式：自动触发远程系统扫描 ─────────────────────────────────
+    if is_ssh {
+        let _ = input_tx.send("查看远程服务器的系统信息，包括操作系统、主机名、CPU、内存和磁盘使用情况".to_string()).await;
+    }
+
     // ── 主事件循环 ────────────────────────────────────────────────────────
     let mut event_stream = EventStream::new();
-    let mut render_tick = tokio::time::interval(Duration::from_millis(16)); // ~60fps
+    let mut render_tick = tokio::time::interval(Duration::from_millis(33)); // ~30fps
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(80));
 
     let result = loop {
         tokio::select! {
-            // 渲染帧
+            // 渲染帧（仅 dirty 或有动画需要时重绘）
             _ = render_tick.tick() => {
-                if let Err(e) = terminal.draw(|f| renderer::draw(f, &state)) {
-                    break Err(e.into());
+                let needs_render = state.dirty
+                    || state.is_thinking
+                    || state.copy_notice_frames > 0;
+                if needs_render {
+                    if let Err(e) = terminal.draw(|f| renderer::draw(f, &state)) {
+                        break Err(e.into());
+                    }
+                    state.dirty = false;
                 }
             }
 

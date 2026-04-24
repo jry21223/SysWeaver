@@ -27,6 +27,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             format!(" {} ", state.mode.to_uppercase()),
             Style::default().fg(Color::Black).bg(theme::CLR_AMBER).add_modifier(Modifier::BOLD),
         ),
+        // SSH 远程徽章
+        if state.is_remote {
+            Span::styled(
+                " 🔗 SSH ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(80, 180, 255))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("", Style::default())
+        },
         Span::styled(" ", theme::style_statusbar()),
         Span::styled(
             format!("{}", state.provider),

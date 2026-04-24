@@ -33,6 +33,9 @@ pub struct ProcessRow {
 
 /// 整个 TUI 的全量渲染状态（唯一数据源）
 pub struct AppState {
+    // ── 渲染脏标记（true = 需要重绘）────────────────────────
+    pub dirty: bool,
+
     // ── 左侧对话区 ──────────────────────────────────────────────
     pub messages: Vec<ChatLine>,
     pub scroll_offset: usize,
@@ -89,6 +92,10 @@ pub struct AppState {
 
     // ── 语音 TTS 开关 ─────────────────────────────────────────────
     pub voice_tts_enabled: bool,
+
+    // ── SSH 远程信息 ─────────────────────────────────────────────
+    pub is_remote: bool,
+    pub remote_label: Option<String>,
 }
 
 /// 对话区一行的内容类型
@@ -138,6 +145,7 @@ pub struct ModalState {
 impl AppState {
     pub fn new(mode: String, provider: String, session_id: String, username: String) -> Self {
         Self {
+            dirty: true,
             messages: Vec::new(),
             scroll_offset: usize::MAX, // 初始自动滚到底
             system_ctx: None,
@@ -165,7 +173,14 @@ impl AppState {
             last_agent_reply: String::new(),
             copy_notice_frames: 0,
             voice_tts_enabled: false,
+            is_remote: false,
+            remote_label: None,
         }
+    }
+
+    /// 标记状态已变化，下次渲染帧需要重绘
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// 添加一行到对话区，并自动滚到底
@@ -175,6 +190,7 @@ impl AppState {
         }
         self.messages.push(line);
         self.scroll_to_bottom();
+        self.mark_dirty();
     }
 
     /// 将最后一条 Agent 回复复制到系统剪贴板（macOS/Linux/Windows 兼容）
@@ -241,16 +257,19 @@ impl AppState {
     /// 滚动到对话区底部
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
+        self.mark_dirty();
     }
 
-    /// 向上滚动（返回是否实际发生了滚动）
+    /// 向上滚动
     pub fn scroll_up(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.mark_dirty();
     }
 
     /// 向下滚动
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.mark_dirty();
     }
 
     /// 光标前进（字符级）
@@ -266,23 +285,29 @@ impl AppState {
         self.cursor_pos = self.cursor_pos.saturating_sub(1);
     }
 
-    /// 在光标位置插入字符
+    /// 在光标位置插入字符（优化：直接操作 String，避免 Vec<char> 转换）
     pub fn insert_char(&mut self, c: char) {
-        let mut chars: Vec<char> = self.input.chars().collect();
-        chars.insert(self.cursor_pos, c);
-        self.input = chars.into_iter().collect();
+        let byte_pos = self.input.char_indices()
+            .nth(self.cursor_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len());
+        self.input.insert(byte_pos, c);
         self.cursor_pos += 1;
+        self.mark_dirty();
     }
 
-    /// 删除光标前一个字符（Backspace）
+    /// 删除光标前一个字符（Backspace，优化：直接操作 String）
     pub fn delete_before_cursor(&mut self) {
         if self.cursor_pos == 0 {
             return;
         }
-        let mut chars: Vec<char> = self.input.chars().collect();
-        chars.remove(self.cursor_pos - 1);
-        self.input = chars.into_iter().collect();
+        let byte_pos = self.input.char_indices()
+            .nth(self.cursor_pos - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.input.remove(byte_pos);
         self.cursor_pos -= 1;
+        self.mark_dirty();
     }
 
     /// 取出并清空输入框内容，同时保存到历史
@@ -301,6 +326,7 @@ impl AppState {
                 }
             }
         }
+        self.mark_dirty();
         text
     }
 
@@ -319,6 +345,7 @@ impl AppState {
         self.input = hist;
         let char_len = self.input.chars().count();
         self.cursor_pos = char_len;
+        self.mark_dirty();
     }
 
     /// 向下浏览历史（Ctrl+N）
@@ -338,6 +365,7 @@ impl AppState {
                 self.cursor_pos = char_len;
             }
         }
+        self.mark_dirty();
     }
 
     /// 记录一条操作到右侧面板历史（保留最近 10 条）
@@ -351,6 +379,7 @@ impl AppState {
         if self.ops_history.len() > 10 {
             self.ops_history.remove(0);
         }
+        self.mark_dirty();
     }
 
     /// 弹出 HIGH RISK 弹窗
@@ -374,6 +403,7 @@ impl AppState {
             confirm_tx: Some(confirm_tx),
             selected_yes: false, // 默认选 No（保守）
         });
+        self.mark_dirty();
     }
 
     /// 关闭弹窗并发送确认结果
@@ -383,6 +413,7 @@ impl AppState {
                 let _ = tx.send(confirmed);
             }
         }
+        self.mark_dirty();
     }
 
     /// 推进 spinner 帧

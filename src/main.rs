@@ -559,6 +559,79 @@ fn is_tty() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+/// 启动时交互式选择 Local / SSH 模式（使用 inquire TUI 风格）
+fn prompt_runtime_mode() -> Result<RuntimeMode> {
+    use inquire::Select;
+
+    print_banner();
+
+    let options = vec![
+        "💻 本地模式",
+        "🔗 SSH 远程模式",
+    ];
+
+    let selection = Select::new("▶ 选择运行模式", options)
+        .with_help_message("↑↓ 切换，Enter 确认")
+        .prompt()
+        .unwrap_or_else(|_| {
+            println!("\n  👋 再见！");
+            std::process::exit(0);
+        });
+
+    match selection {
+        "💻 本地模式" => {
+            println!("\n  ✅ 已选择本地模式\n");
+            Ok(RuntimeMode::Local)
+        }
+        _ => {
+            let cfg = prompt_ssh_config_inquire()?;
+            Ok(RuntimeMode::Ssh(cfg))
+        }
+    }
+}
+
+/// 使用 inquire 交互式收集 SSH 配置
+fn prompt_ssh_config_inquire() -> Result<SshConfig> {
+    use inquire::Text;
+
+    let target = Text::new("🔗 SSH 目标地址")
+        .with_help_message("格式: user@host 或 user@host:port")
+        .prompt()
+        .unwrap_or_else(|_| {
+            println!("\n  👋 再见！");
+            std::process::exit(0);
+        });
+
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("SSH 目标地址不能为空"));
+    }
+
+    let mut cfg = SshConfig::new(trimmed);
+
+    let default_key = std::env::var("HOME")
+        .ok()
+        .map(|h| format!("{}/.ssh/id_rsa", h))
+        .unwrap_or_else(|| "~/.ssh/id_rsa".to_string());
+
+    let key = Text::new("🔑 SSH 身份文件")
+        .with_default(&default_key)
+        .with_help_message("回车使用默认路径，或输入自定义路径")
+        .prompt()
+        .unwrap_or_else(|_| {
+            println!("\n  👋 再见！");
+            std::process::exit(0);
+        });
+
+    let key_trimmed = key.trim().to_string();
+    if !key_trimmed.is_empty() && key_trimmed != default_key {
+        cfg.identity_file = Some(key_trimmed);
+    }
+
+    println!("\n  ✅ 已配置 SSH 远程：{}\n", cfg.display());
+    Ok(cfg)
+}
+
 /// 打印启动 Banner（ASCII Art）
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
@@ -574,89 +647,6 @@ fn print_banner() {
     println!("\x1b[36m  ║                                                          ║\x1b[0m");
     println!("\x1b[36m  ╚══════════════════════════════════════════════════════════╝\x1b[0m");
     println!();
-}
-
-/// 启动时交互式选择 Local / SSH 模式
-fn prompt_runtime_mode() -> Result<RuntimeMode> {
-    use std::io::{self, Write};
-
-    print_banner();
-
-    println!("  \x1b[1;33m▶ 选择运行模式\x1b[0m");
-    println!();
-    println!("    \x1b[1;32m[1]\x1b[0m \x1b[1m💻 本地模式\x1b[0m      \x1b[2m— 管理当前机器（默认）\x1b[0m");
-    println!("    \x1b[1;32m[2]\x1b[0m \x1b[1m🔗 SSH 远程模式\x1b[0m  \x1b[2m— 通过 SSH 连接到远程服务器\x1b[0m");
-    println!("    \x1b[1;32m[q]\x1b[0m \x1b[1m🚪 退出\x1b[0m");
-    println!();
-    print!("  \x1b[36m选择 ›\x1b[0m ");
-    io::stdout().flush().ok();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let choice = input.trim().to_lowercase();
-
-    match choice.as_str() {
-        "" | "1" | "l" | "local" => {
-            println!("\n  \x1b[32m✓\x1b[0m 已选择 \x1b[1m本地模式\x1b[0m\n");
-            Ok(RuntimeMode::Local)
-        }
-        "2" | "s" | "ssh" | "remote" => {
-            let cfg = prompt_ssh_config()?;
-            Ok(RuntimeMode::Ssh(cfg))
-        }
-        "q" | "quit" | "exit" => {
-            println!("\n  👋 再见！\n");
-            std::process::exit(0);
-        }
-        _ => {
-            println!("\n  \x1b[33m⚠\x1b[0m 无效选项，默认使用本地模式\n");
-            Ok(RuntimeMode::Local)
-        }
-    }
-}
-
-/// 交互式收集 SSH 配置
-fn prompt_ssh_config() -> Result<SshConfig> {
-    use std::io::{self, Write};
-
-    println!("\n  \x1b[1;33m▶ SSH 远程配置\x1b[0m");
-    println!();
-
-    // 目标地址
-    print!("  \x1b[36m目标地址\x1b[0m \x1b[2m(格式: user@host 或 user@host:port)\x1b[0m\n  › ");
-    io::stdout().flush().ok();
-    let mut target = String::new();
-    io::stdin().read_line(&mut target)?;
-    let target = target.trim().to_string();
-
-    if target.is_empty() {
-        return Err(anyhow!("SSH 目标地址不能为空"));
-    }
-
-    let mut cfg = SshConfig::new(&target);
-
-    // 身份文件（可选）
-    let default_key = std::env::var("HOME")
-        .ok()
-        .map(|h| format!("{}/.ssh/id_rsa", h));
-
-    print!(
-        "  \x1b[36m身份文件\x1b[0m \x1b[2m(回车使用默认 {})\x1b[0m\n  › ",
-        default_key.as_deref().unwrap_or("~/.ssh/id_rsa")
-    );
-    io::stdout().flush().ok();
-    let mut key = String::new();
-    io::stdin().read_line(&mut key)?;
-    let key = key.trim();
-    if !key.is_empty() {
-        cfg.identity_file = Some(key.to_string());
-    }
-
-    println!(
-        "\n  \x1b[32m✓\x1b[0m 已配置 SSH 远程：\x1b[1m{}\x1b[0m\n",
-        cfg.display()
-    );
-    Ok(cfg)
 }
 
 async fn run_chat_loop(

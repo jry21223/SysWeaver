@@ -179,7 +179,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     }
 
     // 计算每个 Line 折行后的实际视觉行数（Wrap 模式下一个 Line 可占多行）
-    // 加 2 的安全余量补偿 CJK/emoji 宽度在不同终端下的细微差异
+    // 加 5 的安全余量补偿 CJK/emoji 宽度在不同终端下的细微差异
     let visible_height = inner.height as usize;
     let inner_width = inner.width as usize;
 
@@ -189,34 +189,34 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         lines.iter().map(|line| {
             let w = line.width();
             if w == 0 { 1 } else { (w + inner_width - 1) / inner_width }
-        }).sum::<usize>().saturating_add(2).max(1)
+        }).sum::<usize>().saturating_add(5).max(1)
     };
 
     let bottom_scroll = total_visual_rows.saturating_sub(visible_height);
 
-    let scroll = if state.scroll_offset == usize::MAX {
-        // 自动滚到底
-        bottom_scroll
+    // 分离 Paragraph 滚动值和提示用滚动值
+    // 自动滚底时用 u16::MAX → ratatui 自动 clamp 到内容底部，消除手动计算误差
+    let (para_scroll, hint_scroll) = if state.scroll_offset == usize::MAX {
+        (u16::MAX, bottom_scroll)
     } else if state.scroll_offset > total_visual_rows {
-        // scroll_up 从 usize::MAX 出发：usize::MAX - N 表示距底部 N 行
         let steps = usize::MAX - state.scroll_offset;
-        bottom_scroll.saturating_sub(steps)
+        let s = bottom_scroll.saturating_sub(steps);
+        (s.min(u16::MAX as usize) as u16, s)
     } else {
-        state.scroll_offset.min(bottom_scroll)
+        let s = state.scroll_offset.min(bottom_scroll);
+        (s.min(u16::MAX as usize) as u16, s)
     };
-
-    // u16 溢出保护：超大对话截断到 u16::MAX
-    let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
 
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((scroll_u16, 0));
+        .scroll((para_scroll, 0));
 
     f.render_widget(para, inner);
 
     // 右下角显示滚动位置（如果不在底部）
-    if scroll + visible_height < total_visual_rows {
-        let hint = format!(" ↓{} ", total_visual_rows.saturating_sub(scroll + visible_height));
+    if hint_scroll + visible_height < total_visual_rows {
+        let remaining = total_visual_rows.saturating_sub(hint_scroll + visible_height);
+        let hint = format!(" ↓{} ", remaining);
         let hint_area = Rect {
             x: area.x + area.width.saturating_sub(hint.len() as u16 + 2),
             y: area.y + area.height - 1,

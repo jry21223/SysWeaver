@@ -91,6 +91,15 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         Style::default().fg(theme::CLR_CYAN).add_modifier(Modifier::BOLD),
     )));
 
+    // SSH 远程标注
+    if let Some(ref label) = state.remote_label {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", label),
+            Style::default().fg(Color::Rgb(80, 180, 255)),
+        )));
+        lines.push(Line::from(""));
+    }
+
     // HOSTNAME 区
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  HOSTNAME", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD))));
