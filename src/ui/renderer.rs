@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -25,16 +25,16 @@ pub fn draw(f: &mut Frame, state: &AppState) {
             Line::from(""),
             Line::from(Span::styled(
                 "⚠️  终端窗口太小",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::CLR_AMBER).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 format!("最小尺寸：{}×{}，当前：{}×{}", MIN_WIDTH, MIN_HEIGHT, area.width, area.height),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme::CLR_FG_MUTED),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "请放大终端后重试",
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::CLR_FG),
             )),
         ])
         .alignment(Alignment::Center);

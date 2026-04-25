@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -153,8 +153,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
             ChatLine::WatchdogAlert { severity, message } => {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {} ", severity), Style::default().fg(Color::Rgb(255, 180, 50)).add_modifier(Modifier::BOLD)),
-                    Span::styled(sanitize_output(message), Style::default().fg(Color::Rgb(255, 220, 100))),
+                    Span::styled(format!("  {} ", severity), Style::default().fg(theme::CLR_WATCHDOG).add_modifier(Modifier::BOLD)),
+                    Span::styled(sanitize_output(message), Style::default().fg(theme::CLR_WATCHDOG_MSG)),
                 ]));
                 lines.push(Line::from(""));
             }

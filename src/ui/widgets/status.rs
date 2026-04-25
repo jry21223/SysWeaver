@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -99,7 +99,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     if let Some(ref label) = state.remote_label {
         lines.push(Line::from(Span::styled(
             format!("  {}", label),
-            Style::default().fg(Color::Rgb(80, 180, 255)),
+            Style::default().fg(theme::CLR_SSH),
         )));
     }
 
@@ -282,14 +282,14 @@ fn bar_color_style(pct: f64) -> Style {
     } else if pct > 0.7 {
         theme::CLR_AMBER
     } else if pct > 0.5 {
-        Color::Rgb(190, 210, 80)
+        theme::CLR_PROGRESS_MID
     } else {
         theme::CLR_GREEN
     })
 }
 
 /// 将 CPU 采样历史转为 sparkline 字符串（▁▂▃▄▅▆▇█）
-fn make_sparkline(samples: &[f32]) -> String {
+pub(crate) fn make_sparkline(samples: &[f32]) -> String {
     const CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max = samples.iter().cloned().fold(0.0f32, f32::max).max(1.0);
     samples
@@ -302,7 +302,7 @@ fn make_sparkline(samples: &[f32]) -> String {
 }
 
 /// HTML 同款变色进度条 — 按使用率阈值分段着色
-fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
+pub(crate) fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
     let filled = (pct * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
     let bar_color = if pct > 0.9 {
@@ -310,7 +310,7 @@ fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
     } else if pct > 0.7 {
         theme::CLR_AMBER
     } else if pct > 0.5 {
-        Color::Rgb(190, 210, 80)
+        theme::CLR_PROGRESS_MID
     } else {
         theme::CLR_GREEN
     };
@@ -326,7 +326,7 @@ fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
 }
 
 /// 解析 "16.0G total, 4.2G used" → (0.26, "4.2G/16.0G")
-fn parse_mem_pct(info: &str) -> (f64, String) {
+pub(crate) fn parse_mem_pct(info: &str) -> (f64, String) {
     let parts: Vec<&str> = info.split(',').collect();
     if parts.len() >= 2 {
         let total_str = parts[0].trim().split_whitespace().next().unwrap_or("0");
@@ -342,7 +342,7 @@ fn parse_mem_pct(info: &str) -> (f64, String) {
 }
 
 /// 解析 "494G total, 20.4G free, 39% used" → (0.39, "20.4G free")
-fn parse_disk_pct(info: &str) -> (f64, String) {
+pub(crate) fn parse_disk_pct(info: &str) -> (f64, String) {
     let parts: Vec<&str> = info.split(',').collect();
     if parts.len() >= 3 {
         let total_str = parts[0].trim().split_whitespace().next().unwrap_or("0");

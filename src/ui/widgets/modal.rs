@@ -78,13 +78,13 @@ pub fn render(f: &mut Frame, area: Rect, modal: &ModalState) {
     ]));
     info_lines.push(Line::from(vec![
         Span::styled("  影响：", theme::style_dim()),
-        Span::styled(modal.impact.clone(), Style::default().fg(Color::Rgb(220, 180, 140))),
+        Span::styled(modal.impact.clone(), Style::default().fg(theme::CLR_IMPACT)),
     ]));
 
     if let Some(alt) = &modal.alternative {
         info_lines.push(Line::from(vec![
             Span::styled("  建议：", theme::style_dim()),
-            Span::styled(alt.clone(), Style::default().fg(Color::Rgb(160, 220, 180))),
+            Span::styled(alt.clone(), Style::default().fg(theme::CLR_SUGGESTION)),
         ]));
     }
 
@@ -96,7 +96,7 @@ pub fn render(f: &mut Frame, area: Rect, modal: &ModalState) {
     // ── 按钮区 ────────────────────────────────────────────────────────────
     let btn_block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 80)));
+        .border_style(Style::default().fg(theme::CLR_BTN_BORDER));
     let btn_inner = btn_block.inner(btn_area);
     f.render_widget(btn_block, btn_area);
 
@@ -106,17 +106,17 @@ pub fn render(f: &mut Frame, area: Rect, modal: &ModalState) {
     let (yes_style, no_style) = if is_critical {
         (
             // Critical：Yes 按钮置灰不可选
-            Style::default().fg(Color::DarkGray).bg(Color::Rgb(40, 40, 40)),
+            Style::default().fg(Color::DarkGray).bg(theme::CLR_BTN_BG_DARK),
             Style::default().fg(Color::White).bg(border_color).add_modifier(Modifier::BOLD),
         )
     } else if modal.selected_yes {
         (
             Style::default().fg(Color::Black).bg(theme::CLR_SUCCESS).add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Rgb(160, 160, 160)).bg(Color::Rgb(50, 50, 60)),
+            Style::default().fg(theme::CLR_BTN_FG_INACTIVE).bg(theme::CLR_BTN_BG_INACTIVE),
         )
     } else {
         (
-            Style::default().fg(Color::Rgb(160, 160, 160)).bg(Color::Rgb(50, 50, 60)),
+            Style::default().fg(theme::CLR_BTN_FG_INACTIVE).bg(theme::CLR_BTN_BG_INACTIVE),
             Style::default().fg(Color::Black).bg(border_color).add_modifier(Modifier::BOLD),
         )
     };

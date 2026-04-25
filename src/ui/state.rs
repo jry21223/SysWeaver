@@ -135,12 +135,14 @@ pub enum ChatLine {
     },
 }
 
-/// 右侧面板的操作历史条目
+/// 历史 Tab 的操作记录（同时驱动右侧 ops_history 摘要和历史标签页详情）
 pub struct OpRecord {
-    pub tool: String,
-    pub success: bool,
-    #[allow(dead_code)] // 预留用于操作历史时间线显示
     pub timestamp: DateTime<Utc>,
+    pub tool: String,
+    pub args_summary: String,   // 单行截断 ≤60 chars
+    pub success: bool,
+    pub duration_ms: u64,
+    pub undoable: bool,
 }
 
 /// HIGH RISK 弹窗状态
@@ -384,15 +386,24 @@ impl AppState {
         self.mark_dirty();
     }
 
-    /// 记录一条操作到右侧面板历史（保留最近 10 条）
-    pub fn push_op(&mut self, tool: String, success: bool) {
+    /// 记录一条操作到历史 Tab（保留最近 30 条）
+    pub fn push_op(
+        &mut self,
+        tool: String,
+        args_summary: String,
+        success: bool,
+        duration_ms: u64,
+        undoable: bool,
+    ) {
         self.ops_history.push(OpRecord {
-            tool,
-            success,
             timestamp: Utc::now(),
+            tool,
+            args_summary,
+            success,
+            duration_ms,
+            undoable,
         });
-        // 最多保留 10 条
-        if self.ops_history.len() > 10 {
+        if self.ops_history.len() > 30 {
             self.ops_history.remove(0);
         }
         self.mark_dirty();

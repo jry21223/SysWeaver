@@ -745,15 +745,18 @@ fn handle_agent_event(state: &mut AppState, event: AgentEvent) {
         }
 
         AgentEvent::ToolResult { success, preview, duration_ms } => {
-            // 先提取 tool_name（避免和后续 &mut borrow 冲突）
-            let tool_name = state.messages.iter().rev().find_map(|m| {
-                if let ChatLine::ToolCallLine { tool, .. } = m {
-                    Some(tool.clone())
+            // 先回扫匹配最新一次 ToolCall 拿 tool + args（避免和 &mut borrow 冲突）
+            let (tool_name, args) = state.messages.iter().rev().find_map(|m| {
+                if let ChatLine::ToolCallLine { tool, args, .. } = m {
+                    Some((tool.clone(), args.clone()))
                 } else {
                     None
                 }
             }).unwrap_or_default();
-            state.push_op(tool_name, success);
+
+            let args_summary = summarize_args(&args);
+            let undoable = is_undoable(&tool_name, &args, success);
+            state.push_op(tool_name, args_summary, success, duration_ms, undoable);
             state.push_line(ChatLine::ToolResultLine { success, preview, duration_ms });
         }
 
@@ -805,4 +808,53 @@ fn handle_agent_event(state: &mut AppState, event: AgentEvent) {
         }
 
     }
+}
+
+/// 把工具参数压成单行 ≤60 chars 摘要，给历史 Tab 显示。
+fn summarize_args(args: &str) -> String {
+    let flat: String = args.chars()
+        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .collect();
+    let trimmed = flat.trim();
+    if trimmed.chars().count() <= 60 {
+        trimmed.to_string()
+    } else {
+        let head: String = trimmed.chars().take(60).collect();
+        format!("{}…", head)
+    }
+}
+
+/// 简单 allow-list 判断这条工具调用是否产生了可撤销的副作用。
+/// 不接 agent::memory::Memory.last_undoable() — 保持改动外科手术化。
+fn is_undoable(tool: &str, args: &str, success: bool) -> bool {
+    if !success {
+        return false;
+    }
+    match tool {
+        "file.write" | "service.stop" => true,
+        "shell.exec" => {
+            if args.contains("--dry-run") {
+                return false;
+            }
+            !is_read_only_shell(args)
+        }
+        _ => false,
+    }
+}
+
+/// 这些只读 shell 命令不留痕，不需要标记 ↺。
+fn is_read_only_shell(args: &str) -> bool {
+    const RO_PREFIXES: &[&str] = &[
+        "df", "du", "ls", "cat", "ps", "top", "free", "uname",
+        "whoami", "which", "lsof", "netstat", "grep", "head", "tail",
+        "wc", "stat", "echo", "hostname", "id", "uptime", "date",
+    ];
+    let mut tokens = args.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    if first == "sudo" {
+        first = tokens.next().unwrap_or("");
+    }
+    // strip absolute path: /usr/bin/df → df
+    let first = first.rsplit('/').next().unwrap_or(first);
+    RO_PREFIXES.iter().any(|p| first == *p)
 }

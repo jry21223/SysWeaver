@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+// Color is still needed for Color::Black on the AMBER mode badge.
 
 use crate::ui::state::AppState;
 use crate::ui::theme;
@@ -19,7 +20,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(
             format!(" ● {} ", state.username),
             Style::default()
-                .fg(Color::Rgb(212, 160, 74))
+                .fg(theme::CLR_AMBER)
                 .bg(theme::CLR_STATUSBAR)
                 .add_modifier(Modifier::BOLD),
         ),
@@ -33,7 +34,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 " 🔗 SSH ",
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Rgb(80, 180, 255))
+                    .bg(theme::CLR_SSH)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
@@ -42,7 +43,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(" ", theme::style_statusbar()),
         Span::styled(
             format!("{}", state.provider),
-            Style::default().fg(Color::Rgb(180, 180, 200)).bg(theme::CLR_STATUSBAR),
+            Style::default().fg(theme::CLR_PROVIDER).bg(theme::CLR_STATUSBAR),
         ),
         Span::styled(
             format!("  sess:{} ", &state.session_id[..8.min(state.session_id.len())]),
@@ -57,7 +58,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             left_spans.push(Span::styled(
                 format!(" Step {} ", state.task_step),
                 Style::default()
-                    .fg(Color::Rgb(100, 220, 255))
+                    .fg(theme::CLR_CYAN)
                     .bg(theme::CLR_STATUSBAR)
                     .add_modifier(Modifier::BOLD),
             ));
@@ -65,14 +66,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 let hint_short: String = state.task_hint.chars().take(20).collect();
                 left_spans.push(Span::styled(
                     format!("• {} ", hint_short),
-                    Style::default().fg(Color::Rgb(160, 160, 200)).bg(theme::CLR_STATUSBAR),
+                    Style::default().fg(theme::CLR_HINT).bg(theme::CLR_STATUSBAR),
                 ));
             }
         }
         left_spans.push(Span::styled(
             format!(" {} 处理中… ", state.spinner_char()),
             Style::default()
-                .fg(Color::Rgb(255, 220, 100))
+                .fg(theme::CLR_WATCHDOG_MSG)
                 .bg(theme::CLR_STATUSBAR)
                 .add_modifier(Modifier::BOLD),
         ));
@@ -85,7 +86,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             " 🔊 TTS ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Rgb(80, 200, 120))
+                .bg(theme::CLR_GREEN)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -97,7 +98,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             " ✓ 已复制 ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Rgb(100, 220, 100))
+                .bg(theme::CLR_COPY_OK_BG)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -109,7 +110,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(" /exit", dim),
         sep.clone(),
         Span::styled("Ctrl+Y", dim),
-        Span::styled(" 复制", Style::default().fg(Color::Rgb(130, 170, 130)).bg(theme::CLR_STATUSBAR)),
+        Span::styled(" 复制", Style::default().fg(theme::CLR_COPY_LINK).bg(theme::CLR_STATUSBAR)),
         sep.clone(),
         Span::styled("PgUp/Dn ", dim),
     ];
