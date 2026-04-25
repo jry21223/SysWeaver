@@ -149,14 +149,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             Span::styled("  MEM", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
             Span::styled(format!("    {}", mem_label), Style::default().fg(theme::CLR_FG)),
         ]));
-        lines.push(make_colored_bar(disk_used_pct, 20, 2));
+        lines.push(make_colored_bar(mem_used_pct, 20, 2));
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("  DISK", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
             Span::styled(format!("    {}", disk_label), Style::default().fg(theme::CLR_FG)),
         ]));
-        lines.push(make_colored_bar(disk_used_pct, 20, 0));
+        lines.push(make_colored_bar(disk_used_pct, 20, 2));
     }
 
     // ── 服务区 ──
@@ -336,7 +336,7 @@ pub(crate) fn parse_mem_pct(info: &str) -> (f64, String) {
         let used  = parse_size_gb(used_str);
         if total > 0.0 {
             let pct = (used / total).min(1.0);
-            return (pct, format!("{}/{}G", used_str, total_str));
+            return (pct, format!("{}/{}", used_str, total_str));
         }
     }
     (0.0, info.chars().take(20).collect())
