@@ -104,19 +104,19 @@ cargo run -- chat
 # 自定义 Anthropic 端点（如代理/中转）
 export SYSWEAVER_LLM_PROVIDER=anthropic
 export SYSWEAVER_LLM_BASE_URL=https://your-anthropic-proxy.com
-export SYSWEAVER_LLM_MODEL=claude-sonnet-4-5
+export SYSWEAVER_LLM_MODEL=claude-opus-4-7
 export SYSWEAVER_LLM_API_KEY=your-key
 cargo run -- chat
 
 # OpenAI-compatible Provider（OpenRouter、vLLM、LocalAI 等）
 export SYSWEAVER_LLM_PROVIDER=openai-compatible
 export SYSWEAVER_LLM_BASE_URL=https://api.openai.com  # 或自定义端点
-export SYSWEAVER_LLM_MODEL=gpt-4o  # 或其他模型
+export SYSWEAVER_LLM_MODEL=gpt-5.5  # 或其他模型
 export SYSWEAVER_LLM_API_KEY=your-key
 cargo run -- chat
 
 # 或通过 CLI 参数配置
-cargo run -- --provider openai-compatible --base-url https://api.groq.com --model llama-3.1-70b -- chat
+cargo run -- --provider openai-compatible --base-url https://api.groq.com --model openai/gpt-oss-120b -- chat
 
 # 单条指令模式
 cargo run -- run "查看磁盘使用情况"
@@ -154,7 +154,7 @@ CLI 参数 > 环境变量 > 默认值：
 POST {base_url}/v1/messages
 Headers: x-api-key, anthropic-version
 Payload: {
-    "model": "claude-sonnet-4-5",
+    "model": "claude-opus-4-7",
     "tools": [{ "name", "description", "input_schema" }],
     "messages": [...]
 }
@@ -175,7 +175,7 @@ Payload: {
 POST {base_url}/v1/chat/completions
 Headers: Authorization: Bearer {api_key}
 Payload: {
-    "model": "gpt-4o",
+    "model": "gpt-5.5",
     "tools": [{ "type": "function", "function": { "name", "description", "parameters" } }],
     "messages": [{ "role", "content", "tool_calls"? }]
 }
