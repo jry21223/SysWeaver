@@ -174,11 +174,12 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         // 设计要求：仅显示 ● + 服务名（无 CPU/MEM 列）
         for svc in state.service_status.iter().take(svc_limit) {
             // 不活跃服务（CPU=0 且 MEM=0）灰色显示
+            // spec §6: ● = 活跃(GREEN)，○ = 非活跃(FG_MUTED)
             let active = svc.cpu_pct > 0.0 || svc.mem_mb > 0.0;
             lines.push(Line::from(vec![
                 Span::styled(
-                    "  ● ",
-                    Style::default().fg(if active { theme::CLR_GREEN } else { theme::CLR_DIM }),
+                    if active { "  ● " } else { "  ○ " },
+                    Style::default().fg(if active { theme::CLR_GREEN } else { theme::CLR_FG_MUTED }),
                 ),
                 Span::styled(
                     svc.name.chars().take(name_w).collect::<String>(),

@@ -3,24 +3,22 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::ui::state::ActiveTab;
 use crate::ui::theme;
 
-/// TabBar — 匹配 JSX 设计稿 per-tab 下划线风格
-/// 活跃标签：琥珀色文字 + 琥珀色底部边框 + CLR_BG_PANEL 背景
-/// 非活跃标签：灰色文字 + 透明底部边框
+/// TabBar — spec §4：无边框，颜色区分活跃态
+/// 活跃：AMBER + BOLD + BG_PANEL 背景；非活跃：FG_MUTED + BG 背景
 pub fn render(f: &mut Frame, area: Rect, active: &ActiveTab) {
-    // 设计稿渲染为 ◇/◆/◆（活跃 hollow，非活跃 solid），由颜色 + 下划线区分活跃态
+    // spec §4: ◇ 对话  ◈ 监控  ◆ 历史
     let tabs = [
         ("◇", "对话", ActiveTab::Chat),
-        ("◆", "监控", ActiveTab::Monitor),
+        ("◈", "监控", ActiveTab::Monitor),
         ("◆", "历史", ActiveTab::History),
     ];
 
-    // 水平均分 3 个标签
     let widths = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Fill(1),
@@ -31,7 +29,6 @@ pub fn render(f: &mut Frame, area: Rect, active: &ActiveTab) {
     for (i, (icon, label, tab_type)) in tabs.iter().enumerate() {
         let is_active = *active == *tab_type;
 
-        let border_color = if is_active { theme::CLR_AMBER } else { theme::CLR_BG };
         let bg_color = if is_active { theme::CLR_BG_PANEL } else { theme::CLR_BG };
         let fg_color = if is_active { theme::CLR_AMBER } else { theme::CLR_FG_MUTED };
 
@@ -40,14 +37,11 @@ pub fn render(f: &mut Frame, area: Rect, active: &ActiveTab) {
             .bg(bg_color)
             .add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() });
 
-        let block = Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(border_color));
-
-        let text = format!(" {} {} ", icon, label);
-        let para = Paragraph::new(Line::from(Span::styled(text, style)))
-            .block(block);
-
-        f.render_widget(para, widths[i]);
+        // spec §4: 无边框，用空格填满整格形成色块效果
+        let text = format!(" {} {}  ", icon, label);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, style))),
+            widths[i],
+        );
     }
 }
