@@ -149,14 +149,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             Span::styled("  MEM", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
             Span::styled(format!("    {}", mem_label), Style::default().fg(theme::CLR_FG)),
         ]));
-        lines.push(make_colored_bar(mem_used_pct, 20));
+        lines.push(make_colored_bar(disk_used_pct, 20, 2));
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("  DISK", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
             Span::styled(format!("    {}", disk_label), Style::default().fg(theme::CLR_FG)),
         ]));
-        lines.push(make_colored_bar(disk_used_pct, 20));
+        lines.push(make_colored_bar(disk_used_pct, 20, 0));
     }
 
     // ── 服务区 ──
@@ -277,15 +277,7 @@ fn parse_network_info(info: &str) -> Vec<(&'static str, String)> {
 }
 
 fn bar_color_style(pct: f64) -> Style {
-    Style::default().fg(if pct > 0.9 {
-        theme::CLR_RED
-    } else if pct > 0.7 {
-        theme::CLR_AMBER
-    } else if pct > 0.5 {
-        theme::CLR_PROGRESS_MID
-    } else {
-        theme::CLR_GREEN
-    })
+    Style::default().fg(bar_color_for(pct))
 }
 
 /// 将 CPU 采样历史转为 sparkline 字符串（▁▂▃▄▅▆▇█）
@@ -301,11 +293,28 @@ pub(crate) fn make_sparkline(samples: &[f32]) -> String {
         .collect()
 }
 
-/// HTML 同款变色进度条 — 按使用率阈值分段着色
-pub(crate) fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
+/// HTML 同款变色进度条 — 按使用率阈值分段着色。
+/// `indent` 控制起始空格数；调用方按各自布局指定，避免在外面再去剥离前缀。
+pub(crate) fn make_colored_bar(pct: f64, width: usize, indent: usize) -> Line<'static> {
     let filled = (pct * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
-    let bar_color = if pct > 0.9 {
+    let bar_color = bar_color_for(pct);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    if indent > 0 {
+        spans.push(Span::raw(" ".repeat(indent)));
+    }
+    spans.push(Span::styled("█".repeat(filled), Style::default().fg(bar_color)));
+    spans.push(Span::styled("░".repeat(empty), Style::default().fg(theme::CLR_DIM)));
+    spans.push(Span::styled(
+        format!(" {:.0}%", pct * 100.0),
+        Style::default().fg(bar_color),
+    ));
+    Line::from(spans)
+}
+
+/// 进度/百分比统一配色：>90% 红、>70% 琥珀、>50% 黄绿、其余绿
+pub(crate) fn bar_color_for(pct: f64) -> ratatui::style::Color {
+    if pct > 0.9 {
         theme::CLR_RED
     } else if pct > 0.7 {
         theme::CLR_AMBER
@@ -313,16 +322,7 @@ pub(crate) fn make_colored_bar(pct: f64, width: usize) -> Line<'static> {
         theme::CLR_PROGRESS_MID
     } else {
         theme::CLR_GREEN
-    };
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
-        Span::styled("░".repeat(empty), Style::default().fg(theme::CLR_DIM)),
-        Span::styled(
-            format!(" {:.0}%", pct * 100.0),
-            Style::default().fg(bar_color),
-        ),
-    ])
+    }
 }
 
 /// 解析 "16.0G total, 4.2G used" → (0.26, "4.2G/16.0G")

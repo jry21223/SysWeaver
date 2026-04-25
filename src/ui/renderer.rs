@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Paragraph},
 };
 
 
@@ -18,6 +18,9 @@ const MIN_HEIGHT: u16 = 20;
 /// 顶层 draw 入口 — 由 TuiApp 每帧调用
 pub fn draw(f: &mut Frame, state: &AppState) {
     let area = f.area();
+
+    // 铺满整帧背景，防止 Ghostty 等终端的默认底色透出
+    f.render_widget(Block::default().style(Style::default().bg(theme::CLR_BG)), area);
 
     // 终端太小时显示提示
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {

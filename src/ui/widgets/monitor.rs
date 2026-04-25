@@ -109,7 +109,7 @@ fn render_rich_header(f: &mut Frame, area: Rect, state: &AppState) {
     if let Some(ctx) = state.system_ctx.as_ref() {
         let (mem_pct, mem_label) = parse_mem_pct(&ctx.memory_info);
         let bar_width = (area.width as usize).saturating_sub(28).clamp(10, 30);
-        let mem_bar = make_colored_bar(mem_pct, bar_width);
+        let mem_bar = make_colored_bar(mem_pct, bar_width, 0);
         let mut spans = vec![
             Span::styled("  MEM  ", Style::default().fg(theme::CLR_DIM).add_modifier(Modifier::BOLD)),
         ];

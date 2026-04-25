@@ -90,20 +90,22 @@ impl ToolManager {
     }
 
     /// 获取 SSH 配置（供外部查询）
-    #[allow(dead_code)]
     pub fn ssh_config(&self) -> Option<&SshConfig> {
         self.ssh.as_deref()
     }
 
     /// 根据 ToolCall 分发到对应工具执行
     pub async fn dispatch(&self, call: &ToolCall) -> Result<ToolResult> {
-        // SSH 远程模式：shell.exec 和 system.info 路由到远程
+        // SSH 远程模式：将所有执行 OS 命令的工具路由到远端
         if let Some(ssh) = &self.ssh {
-            if call.tool == "shell.exec" {
-                return dispatch_ssh_shell(ssh, call).await;
-            }
-            if call.tool == "system.info" {
-                return dispatch_ssh_system(ssh, call).await;
+            match call.tool.as_str() {
+                "shell.exec"     => return dispatch_ssh_shell(ssh, call).await,
+                "system.info"    => return dispatch_ssh_system(ssh, call).await,
+                "process.manage" => return dispatch_ssh_process(ssh, call).await,
+                "service.manage" => return dispatch_ssh_service(ssh, call).await,
+                "log.tail"       => return dispatch_ssh_log(ssh, call).await,
+                "net.check"      => return dispatch_ssh_net(ssh, call).await,
+                _ => {}
             }
         }
 
@@ -197,5 +199,160 @@ async fn dispatch_ssh_system(ssh: &SshConfig, call: &ToolCall) -> Result<ToolRes
             dry_run_preview: None,
         }),
         Err(e) => Ok(ToolResult::failure("system.info", &e.to_string(), -1)),
+    }
+}
+
+/// SSH 模式下执行 process.manage
+async fn dispatch_ssh_process(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult> {
+    if call.dry_run {
+        let action = call.args["action"].as_str().unwrap_or("?");
+        return Ok(ToolResult::dry_run_preview(
+            "process.manage",
+            &format!("[SSH:{}] 将执行 process.manage action={}", ssh.display(), action),
+        ));
+    }
+
+    let action = call.args["action"].as_str().unwrap_or("");
+    let cmd = match action {
+        "list" => {
+            let sort_by = call.args["sort_by"].as_str().unwrap_or("memory");
+            let sort_flag = match sort_by {
+                "cpu"    => "--sort=-%cpu",
+                "pid"    => "--sort=pid",
+                _        => "--sort=-%mem",
+            };
+            format!("ps aux {} 2>/dev/null | head -21 || ps aux 2>/dev/null | head -21", sort_flag)
+        }
+        "find" => {
+            let filter = call.args["filter"].as_str().unwrap_or("");
+            format!("ps aux 2>/dev/null | grep -i '{}' | grep -v grep", filter)
+        }
+        "kill" => {
+            let pid    = call.args["pid"].as_i64().unwrap_or(0);
+            let signal = call.args["signal"].as_str().unwrap_or("TERM");
+            format!("kill -{} {} 2>&1", signal, pid)
+        }
+        "info" => {
+            let pid = call.args["pid"].as_i64().unwrap_or(0);
+            format!("ps -p {} -o pid,ppid,user,stat,%cpu,%mem,command 2>/dev/null || ps aux 2>/dev/null | awk '$2=={}'", pid, pid)
+        }
+        _ => return Ok(ToolResult::failure("process.manage", &format!("不支持的操作: {}", action), -1)),
+    };
+
+    match ssh.exec(&cmd).await {
+        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
+            success: exit_code == 0 || !stdout.is_empty(),
+            tool: "process.manage".to_string(),
+            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
+            stderr,
+            exit_code,
+            duration_ms,
+            dry_run_preview: None,
+        }),
+        Err(e) => Ok(ToolResult::failure("process.manage", &e.to_string(), -1)),
+    }
+}
+
+/// SSH 模式下执行 service.manage
+async fn dispatch_ssh_service(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult> {
+    if call.dry_run {
+        let action = call.args["action"].as_str().unwrap_or("?");
+        return Ok(ToolResult::dry_run_preview(
+            "service.manage",
+            &format!("[SSH:{}] 将执行 service.manage action={}", ssh.display(), action),
+        ));
+    }
+
+    let action  = call.args["action"].as_str().unwrap_or("");
+    let service = call.args["service"].as_str().unwrap_or("");
+
+    let cmd = match action {
+        "list" => "systemctl list-units --type=service --state=running --no-pager --plain 2>/dev/null | head -20 || launchctl list 2>/dev/null | head -20".to_string(),
+        "status" => format!(
+            "systemctl status {} --no-pager -l 2>/dev/null || launchctl list | grep '{}'",
+            service, service
+        ),
+        "start" | "stop" | "restart" | "enable" | "disable" => format!(
+            "systemctl {} {} 2>&1 || launchctl {} {} 2>&1",
+            action, service, action, service
+        ),
+        _ => return Ok(ToolResult::failure("service.manage", &format!("不支持的操作: {}", action), -1)),
+    };
+
+    match ssh.exec(&cmd).await {
+        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
+            success: exit_code == 0 || !stdout.is_empty(),
+            tool: "service.manage".to_string(),
+            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
+            stderr,
+            exit_code,
+            duration_ms,
+            dry_run_preview: None,
+        }),
+        Err(e) => Ok(ToolResult::failure("service.manage", &e.to_string(), -1)),
+    }
+}
+
+/// SSH 模式下执行 log.tail
+async fn dispatch_ssh_log(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult> {
+    if call.dry_run {
+        return Ok(ToolResult::dry_run_preview(
+            "log.tail",
+            &format!("[SSH:{}] 将读取远端日志", ssh.display()),
+        ));
+    }
+
+    let path  = call.args["path"].as_str().unwrap_or("/var/log/syslog");
+    let lines = call.args["lines"].as_i64().unwrap_or(50).min(500);
+    let cmd   = format!("tail -n {} {} 2>&1", lines, path);
+
+    match ssh.exec(&cmd).await {
+        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
+            success: exit_code == 0,
+            tool: "log.tail".to_string(),
+            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
+            stderr,
+            exit_code,
+            duration_ms,
+            dry_run_preview: None,
+        }),
+        Err(e) => Ok(ToolResult::failure("log.tail", &e.to_string(), -1)),
+    }
+}
+
+/// SSH 模式下执行 net.check
+async fn dispatch_ssh_net(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult> {
+    if call.dry_run {
+        return Ok(ToolResult::dry_run_preview(
+            "net.check",
+            &format!("[SSH:{}] 将检查远端网络", ssh.display()),
+        ));
+    }
+
+    let action = call.args["action"].as_str().unwrap_or("ports");
+    let cmd = match action {
+        "ports"  => "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || lsof -iTCP -sTCP:LISTEN 2>/dev/null".to_string(),
+        "ping"   => {
+            let host = call.args["host"].as_str().unwrap_or("8.8.8.8");
+            format!("ping -c 3 {} 2>&1", host)
+        }
+        "dns"    => {
+            let host = call.args["host"].as_str().unwrap_or("google.com");
+            format!("nslookup {} 2>&1 || dig {} 2>&1", host, host)
+        }
+        _        => "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null".to_string(),
+    };
+
+    match ssh.exec(&cmd).await {
+        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
+            success: exit_code == 0 || !stdout.is_empty(),
+            tool: "net.check".to_string(),
+            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
+            stderr,
+            exit_code,
+            duration_ms,
+            dry_run_preview: None,
+        }),
+        Err(e) => Ok(ToolResult::failure("net.check", &e.to_string(), -1)),
     }
 }

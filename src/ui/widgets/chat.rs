@@ -224,7 +224,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((para_scroll, 0));
+        .scroll((para_scroll, 0))
+        .style(Style::default().bg(crate::ui::theme::CLR_BG));
 
     f.render_widget(para, inner);
 
