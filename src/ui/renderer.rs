@@ -8,6 +8,7 @@ use ratatui::{
 
 
 use super::state::{ActiveTab, AppState};
+use super::theme;
 use super::widgets as ui_widgets;
 
 /// 最小终端尺寸
@@ -44,7 +45,7 @@ pub fn draw(f: &mut Frame, state: &AppState) {
     // ── 垂直切分：状态栏(1) / TabBar(2) / 主体(fill) / 输入区(3) ─────────────
     let [statusbar_area, tabbar_area, main_area, input_area] = Layout::vertical([
         Constraint::Length(1),      // StatusBar
-        Constraint::Length(1),      // TabBar（per-tab 下划线）
+        Constraint::Length(2),      // TabBar (1 row for text + 1 row for active underline)
         Constraint::Fill(1),        // 主内容区
         Constraint::Length(3),      // InputBar（精简为 3 行）
     ])
@@ -62,11 +63,21 @@ pub fn draw(f: &mut Frame, state: &AppState) {
     } else {
         30
     };
-    let [chat_area, status_area] = Layout::horizontal([
+    let [chat_area, divider_area, status_area] = Layout::horizontal([
         Constraint::Fill(1),
+        Constraint::Length(1),
         Constraint::Length(side_width),
     ])
     .areas(main_area);
+
+    // 主区与侧栏之间的竖向分隔线（设计：border-left: 1px solid BORDER）
+    let divider_line: Vec<Line> = (0..divider_area.height)
+        .map(|_| Line::from(Span::styled("│", Style::default().fg(theme::CLR_BORDER))))
+        .collect();
+    f.render_widget(
+        Paragraph::new(divider_line).style(Style::default().bg(theme::CLR_BG)),
+        divider_area,
+    );
 
     // ── 渲染各区 ─────────────────────────────────────────────────────────
     ui_widgets::statusbar::render(f, statusbar_area, state);

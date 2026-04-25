@@ -209,10 +209,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     let bottom_scroll = total_visual_rows.saturating_sub(visible_height);
 
-    // 分离 Paragraph 滚动值和提示用滚动值
-    // 自动滚底时用 u16::MAX → ratatui 自动 clamp 到内容底部，消除手动计算误差
+    // 计算实际滚动行数（ratatui 不会自动 clamp，必须显式取 min）
     let (para_scroll, hint_scroll) = if state.scroll_offset == usize::MAX {
-        (u16::MAX, bottom_scroll)
+        let s = bottom_scroll.min(u16::MAX as usize) as u16;
+        (s, bottom_scroll)
     } else if state.scroll_offset > total_visual_rows {
         let steps = usize::MAX - state.scroll_offset;
         let s = bottom_scroll.saturating_sub(steps);
