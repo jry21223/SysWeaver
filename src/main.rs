@@ -481,7 +481,10 @@ async fn main() -> Result<()> {
 
             match cli.command {
                 Commands::Chat => {
-                    let ctx = context::system_scan::scan().await;
+                    let ctx = match &ssh_config {
+                        Some(ssh) => context::system_scan::scan_remote(ssh).await,
+                        None      => context::system_scan::scan().await,
+                    };
 
                     if cli.no_tui {
                         // ── CLI fallback 模式（美化版）─────────────────────
@@ -512,7 +515,10 @@ async fn main() -> Result<()> {
                     }
                 }
                 Commands::Run { instruction, dry_run } => {
-                    let ctx = context::system_scan::scan().await;
+                    let ctx = match &ssh_config {
+                        Some(ssh) => context::system_scan::scan_remote(ssh).await,
+                        None      => context::system_scan::scan().await,
+                    };
                     run_single(&llm_config, &cli.mode, ctx, &instruction, dry_run, ssh_config).await?;
                 }
                 Commands::Explain { file: Some(path) } => {
@@ -632,18 +638,17 @@ fn prompt_ssh_config_inquire() -> Result<SshConfig> {
     Ok(cfg)
 }
 
-/// 打印启动 Banner（ASCII Art）
+/// 打印启动 Banner（编织 weave 主题对应 SysWeaver 品牌）
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     println!();
     println!("\x1b[36m  ╔══════════════════════════════════════════════════════════╗\x1b[0m");
     println!("\x1b[36m  ║                                                          ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m     _  _  _ \x1b[0;36m                                         ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m    (_)(_)(_)\x1b[0;36m     \x1b[1;37msysweaver — 自然语言操作系统代理\x1b[0;36m        ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m    | || || |\x1b[0;36m     \x1b[2;37mAI Hackathon 2026 · αFUSION\x1b[0;36m      ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m _  | || || |\x1b[0;36m                                         ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m| |_| || || |\x1b[0;36m     \x1b[2;37mv{:<12}\x1b[0;36m                         ║\x1b[0m", version);
-    println!("\x1b[36m  ║   \x1b[1;35m \\___/ |_||_|\x1b[0;36m                                         ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m╲ ╱ ╲ ╱ ╲ ╱  \x1b[0;36m                                          ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m ╳   ╳   ╳   \x1b[0;36m  \x1b[1;37mSysWeaver — 自然语言操作系统代理\x1b[0;36m       ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m╱ ╲ ╱ ╲ ╱ ╲  \x1b[0;36m  \x1b[2;37mAI Hackathon 2026 · αFUSION\x1b[0;36m            ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m ╳   ╳   ╳   \x1b[0;36m                                          ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m╲ ╱ ╲ ╱ ╲ ╱  \x1b[0;36m  \x1b[2;37mv{:<12}\x1b[0;36m                              ║\x1b[0m", version);
     println!("\x1b[36m  ║                                                          ║\x1b[0m");
     println!("\x1b[36m  ╚══════════════════════════════════════════════════════════╝\x1b[0m");
     println!();
@@ -705,7 +710,10 @@ async fn run_chat_loop(
                 }
                 if input == "/status" {
                     println!("\n⏳ 采集系统状态…");
-                    let new_ctx = context::system_scan::scan().await;
+                    let new_ctx = match saved_ssh.as_ref() {
+                        Some(ssh) => context::system_scan::scan_remote(ssh).await,
+                        None      => context::system_scan::scan().await,
+                    };
                     println!("\n📊 系统状态速览");
                     println!("   OS：{}", new_ctx.os_info);
                     println!("   主机：{}", new_ctx.hostname);

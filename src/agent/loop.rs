@@ -226,7 +226,10 @@ impl AgentLoop {
         self.memory.record_operation(tool_call, &result, rollback);
 
         if self.memory.needs_refresh() {
-            let new_ctx = system_scan::scan().await;
+            let new_ctx = match self.tools.ssh_config() {
+                Some(ssh) => system_scan::scan_remote(ssh).await,
+                None      => system_scan::scan().await,
+            };
             let anomalies = system_scan::detect_anomalies(&new_ctx);
             self.memory.refresh_system_context(new_ctx.clone());
 

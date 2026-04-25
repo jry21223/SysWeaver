@@ -51,10 +51,9 @@ pub struct AppState {
     // ── 进程缓存（由后台 spawn_blocking 每 ~2s 注入）─────────
     pub process_list: Vec<ProcessRow>,
 
-    // ── CPU 使用率缓存（在 process tick 中同步采集）──────
-    pub cpu_usage_pct: f32,
+    // ── CPU 采样历史（最近 20 个点，供 sparkline / avg / peak 派生）─────
     pub cpu_peak_pct: f32,
-    pub cpu_history: Vec<f32>,  // 最近 20 个采样点（供 sparkline）
+    pub cpu_history: Vec<f32>,
 
     // ── 右侧状态面板 ────────────────────────────────────────────
     pub system_ctx: Option<SystemContext>,
@@ -174,9 +173,8 @@ impl AppState {
             active_tab: ActiveTab::Chat,
             side_collapsed: false,
             process_list: Vec::new(),
-            cpu_usage_pct: 0.0,
             cpu_peak_pct: 0.0,
-            cpu_history: Vec::new(),
+            cpu_history: Vec::with_capacity(20),
             modal: None,
             is_thinking: false,
             spinner_frame: 0,
@@ -452,16 +450,15 @@ impl AppState {
         self.mark_dirty();
     }
 
-    /// 接收后台 spawn_blocking 采集到的 CPU 采样值并写入历史
+    /// 接收后台 spawn_blocking 采集到的 CPU 采样值并写入历史（保留最近 20 个）
     pub fn apply_cpu_sample(&mut self, cpu: f32) {
-        self.cpu_usage_pct = cpu;
         if cpu > self.cpu_peak_pct {
             self.cpu_peak_pct = cpu;
         }
-        self.cpu_history.push(cpu);
-        if self.cpu_history.len() > 20 {
+        if self.cpu_history.len() >= 20 {
             self.cpu_history.remove(0);
         }
+        self.cpu_history.push(cpu);
         self.mark_dirty();
     }
 
