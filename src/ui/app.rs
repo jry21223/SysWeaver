@@ -101,48 +101,11 @@ pub async fn run_tui(
     let version = env!("CARGO_PKG_VERSION");
     let ctx = effective_ctx.clone();  // shadow: 后续欢迎/agent 都使用 effective ctx
     let welcome = format!(
-        "╭─────────────────────────────────────────────────────────╮\n\
-         │  🤖  sysweaver v{:<8}   {:<30}  │\n\
-         │      AI Hackathon 2026 · 超聚变 αFUSION 预赛           │\n\
-         ╰─────────────────────────────────────────────────────────╯\n\n\
-         ┌─ 📊 系统环境 ─────────────────────────────────────────────\n\
-         │  OS         {}\n\
-         │  主机名      {}\n\
-         │  CPU        {}\n\
-         │  内存        {}\n\
-         │  磁盘        {}\n\
-         │  网络        {}\n\
-         │  包管理器    {}\n\
-         └───────────────────────────────────────────────────────────\n\n\
-         ┌─ 💡 常用命令 ─────────────────────────────────────────────\n\
-         │  /help         查看完整帮助\n\
-         │  /status       实时系统状态 & 异常检测\n\
-         │  /report       生成系统健康综合报告\n\
-         │  /history      操作历史（含可撤销标记）\n\
-         │  /undo         撤销上一步操作\n\
-         │  /playbook     Playbook 管理（save / list / run）\n\
-         │  /export       导出完整对话到 Markdown\n\
-         │  /voice tts    开启语音朗读\n\
-         │  /clear        清除对话上下文\n\
-         │  /exit         退出\n\
-         └───────────────────────────────────────────────────────────\n\n\
-         ┌─ ⌨️  快捷键 ──────────────────────────────────────────────\n\
-         │  Ctrl+Y  复制最后一条回复   Ctrl+P/N  浏览历史\n\
-         │  PgUp/Dn 滚动对话区        End       滚到底部\n\
-         └───────────────────────────────────────────────────────────\n\n\
-         ✨ 请用自然语言描述您的需求，例如：\n\
+        "sysweaver v{} {} 已就绪。用自然语言描述你的需求，例如：\n\
            · 查看磁盘使用情况\n\
            · 列出内存占用最高的 5 个进程\n\
            · 把 nginx 配置改到 8080 端口并重启",
-        version,
-        mode_badge,
-        ctx.os_info,
-        ctx.hostname,
-        ctx.cpu_info,
-        ctx.memory_info,
-        ctx.disk_info,
-        ctx.network_info,
-        ctx.package_manager,
+        version, mode_badge,
     );
     state.push_line(ChatLine::AgentMsg(welcome));
     state.push_line(ChatLine::Separator);
@@ -610,9 +573,18 @@ async fn handle_event(
                     }
                 }
 
-                // Tab：循环切换标签页
+                // Tab：循环切换标签页；1/2/3：直接跳到对应标签（spec §10）
                 (KeyModifiers::NONE, KeyCode::Tab) => {
                     state.active_tab = state.active_tab.next();
+                }
+                (KeyModifiers::NONE, KeyCode::Char('1')) if state.input.is_empty() && state.modal.is_none() => {
+                    state.active_tab = crate::ui::state::ActiveTab::Chat;
+                }
+                (KeyModifiers::NONE, KeyCode::Char('2')) if state.input.is_empty() && state.modal.is_none() => {
+                    state.active_tab = crate::ui::state::ActiveTab::Monitor;
+                }
+                (KeyModifiers::NONE, KeyCode::Char('3')) if state.input.is_empty() && state.modal.is_none() => {
+                    state.active_tab = crate::ui::state::ActiveTab::History;
                 }
 
                 // Ctrl+B：折叠/展开右侧面板
