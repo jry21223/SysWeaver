@@ -414,6 +414,8 @@ pub async fn run_tui(
     // 进程列表 + CPU 采样：每 2s 在后台 spawn_blocking 跑 ps/top，结果通过 event 通道回传
     // 这样事件循环不会被 ps aux + top -l1 阻塞数百毫秒
     let mut proc_refresh_tick = tokio::time::interval(Duration::from_secs(2));
+    // 防止上一轮采样未完成时（如 top 卡住）累积新任务把 runtime 挤爆
+    let proc_busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // 录音状态（按 F5 启动/停止）
     let mut recording: Option<RecordingState> = None;
 
@@ -445,18 +447,24 @@ pub async fn run_tui(
 
             // 后台进程/CPU 采样：spawn_blocking 跑 ps/top，避免阻塞事件循环
             _ = proc_refresh_tick.tick() => {
-                let tx = event_tx.clone();
-                tokio::spawn(async move {
-                    let res = tokio::task::spawn_blocking(|| {
-                        let procs = crate::ui::state::fetch_process_list();
-                        let cpu = crate::ui::state::sample_cpu_usage();
-                        (procs, cpu)
-                    }).await;
-                    if let Ok((procs, cpu)) = res {
-                        let _ = tx.send(AgentEvent::ProcessListUpdate(procs)).await;
-                        let _ = tx.send(AgentEvent::CpuSampleUpdate(cpu)).await;
-                    }
-                });
+                use std::sync::atomic::Ordering;
+                // 上一轮还没回来就跳过——避免 top 卡住时 runtime 任务无限累积
+                if !proc_busy.swap(true, Ordering::AcqRel) {
+                    let tx = event_tx.clone();
+                    let busy = proc_busy.clone();
+                    tokio::spawn(async move {
+                        let res = tokio::task::spawn_blocking(|| {
+                            let procs = crate::ui::state::fetch_process_list();
+                            let cpu = crate::ui::state::sample_cpu_usage();
+                            (procs, cpu)
+                        }).await;
+                        if let Ok((procs, cpu)) = res {
+                            let _ = tx.send(AgentEvent::ProcessListUpdate(procs)).await;
+                            let _ = tx.send(AgentEvent::CpuSampleUpdate(cpu)).await;
+                        }
+                        busy.store(false, Ordering::Release);
+                    });
+                }
             }
 
             // 30s 系统信息刷新（SSH 或本地）
