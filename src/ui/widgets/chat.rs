@@ -35,30 +35,45 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     for msg in &state.messages {
         match msg {
             ChatLine::UserMsg(text) => {
-                // JSX: 用户消息用 › 符号，琥珀色
-                lines.push(Line::from(vec![
-                    Span::styled("› ", Style::default().fg(theme::CLR_AMBER).add_modifier(Modifier::BOLD)),
-                ]));
-                // 支持多行用户输入
-                for l in text.lines() {
+                // JSX: 用户消息用 › 符号，琥珀色，文字与符号同行（flex row）
+                let prefix_style = Style::default().fg(theme::CLR_AMBER).add_modifier(Modifier::BOLD);
+                let body_style = Style::default().fg(theme::CLR_FG);
+                let text_lines: Vec<&str> = text.lines().collect();
+                if text_lines.is_empty() {
+                    lines.push(Line::from(vec![Span::styled("› ", prefix_style)]));
+                } else {
                     lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default()),
-                        Span::styled(l.to_string(), Style::default().fg(theme::CLR_FG)),
+                        Span::styled("› ", prefix_style),
+                        Span::styled(text_lines[0].to_string(), body_style),
                     ]));
+                    for l in &text_lines[1..] {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(l.to_string(), body_style),
+                        ]));
+                    }
                 }
                 lines.push(Line::from(""));
             }
 
             ChatLine::AgentMsg(text) => {
-                // JSX: Agent 消息用 ◆ 符号，青色
-                lines.push(Line::from(vec![
-                    Span::styled("◆ ", Style::default().fg(theme::CLR_CYAN)),
-                ]));
-                for l in text.lines() {
+                // JSX: Agent 消息用 ◆ 符号，青色，文字与符号同行
+                let prefix_style = Style::default().fg(theme::CLR_CYAN);
+                let body_style = Style::default().fg(theme::CLR_FG);
+                let text_lines: Vec<&str> = text.lines().collect();
+                if text_lines.is_empty() {
+                    lines.push(Line::from(vec![Span::styled("◆ ", prefix_style)]));
+                } else {
                     lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default()),
-                        Span::styled(sanitize_output(l), Style::default().fg(theme::CLR_FG)),
+                        Span::styled("◆ ", prefix_style),
+                        Span::styled(sanitize_output(text_lines[0]), body_style),
                     ]));
+                    for l in &text_lines[1..] {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(sanitize_output(l), body_style),
+                        ]));
+                    }
                 }
                 lines.push(Line::from(""));
             }

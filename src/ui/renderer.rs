@@ -51,13 +51,22 @@ pub fn draw(f: &mut Frame, state: &AppState) {
     .areas(area);
 
     // ── 主体水平切：聊天区 / 状态面板 ─────────────────────────────────────
-    let (chat_w, status_w) = if state.side_collapsed {
-        (Constraint::Fill(1), Constraint::Length(3))
+    // 设计稿：侧栏 260px(≈34 chars) 展开 / 36px(≈4 chars) 折叠
+    // 终端窄时按比例退化避免主区被挤压
+    let side_width: u16 = if state.side_collapsed {
+        4
+    } else if main_area.width < 90 {
+        24
+    } else if main_area.width >= 130 {
+        34
     } else {
-        (Constraint::Percentage(70), Constraint::Percentage(30))
+        30
     };
-    let [chat_area, status_area] =
-        Layout::horizontal([chat_w, status_w]).areas(main_area);
+    let [chat_area, status_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(side_width),
+    ])
+    .areas(main_area);
 
     // ── 渲染各区 ─────────────────────────────────────────────────────────
     ui_widgets::statusbar::render(f, statusbar_area, state);
