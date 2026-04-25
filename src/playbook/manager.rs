@@ -6,9 +6,9 @@ use std::path::PathBuf;
 /// Playbook 来源类型（优先级从高到低）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlaybookSource {
-    /// 项目级：`.jij/playbooks/`
+    /// 项目级：`.sysweaver/playbooks/`
     Project = 3,
-    /// 用户级：`~/.jij/playbooks/`
+    /// 用户级：`~/.sysweaver/playbooks/`
     User = 2,
     /// 内置：系统预定义模板
     Bundled = 1,
@@ -258,13 +258,13 @@ impl PlaybookManager {
         ]
     }
 
-    /// 加载用户级 Playbook（`~/.jij/playbooks/`）
+    /// 加载用户级 Playbook（`~/.sysweaver/playbooks/`）
     fn load_user_playbooks(&mut self) -> Result<()> {
         let user_home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| "/tmp".to_string());
 
-        let user_path = PathBuf::from(user_home).join(".jij").join("playbooks");
+        let user_path = PathBuf::from(user_home).join(".sysweaver").join("playbooks");
         self.source_paths.insert(PlaybookSource::User, user_path.clone());
 
         self.load_from_directory(&user_path, PlaybookSource::User)?;
@@ -272,9 +272,9 @@ impl PlaybookManager {
         Ok(())
     }
 
-    /// 加载项目级 Playbook（`.jij/playbooks/`）
+    /// 加载项目级 Playbook（`.sysweaver/playbooks/`）
     fn load_project_playbooks(&mut self, project_dir: &PathBuf) -> Result<()> {
-        let project_path = project_dir.join(".jij").join("playbooks");
+        let project_path = project_dir.join(".sysweaver").join("playbooks");
         self.source_paths.insert(PlaybookSource::Project, project_path.clone());
 
         self.load_from_directory(&project_path, PlaybookSource::Project)?;
@@ -371,7 +371,7 @@ impl PlaybookManager {
             .unwrap_or_else(|| {
                 // 默认保存到用户级
                 let user_home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(user_home).join(".jij").join("playbooks")
+                PathBuf::from(user_home).join(".sysweaver").join("playbooks")
             });
 
         // 创建目录（如果不存在）

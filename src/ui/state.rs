@@ -259,7 +259,7 @@ impl AppState {
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let path = format!("{}/jij_chat_{}.txt", home, timestamp);
+        let path = format!("{}/sysweaver_chat_{}.txt", home, timestamp);
         let content = self.export_chat_as_text();
         std::fs::write(&path, &content).map_err(|e| e.to_string())?;
         Ok(path)

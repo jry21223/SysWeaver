@@ -64,7 +64,7 @@ impl ProviderPreset {
         self.suggested_env_keys
             .first()
             .map(|s| s.as_str())
-            .unwrap_or("AGENT_UNIX_LLM_API_KEY")
+            .unwrap_or("SYSWEAVER_LLM_API_KEY")
     }
 }
 
@@ -191,7 +191,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             LlmProviderKind::OpenAiCompatible,
             "",
             "",
-            &["AGENT_UNIX_LLM_API_KEY"],
+            &["SYSWEAVER_LLM_API_KEY"],
             &["self-hosted", "proxy"],
             "自定义 OpenAI-compatible 端点",
         ),
@@ -223,7 +223,7 @@ fn user_config_path() -> PathBuf {
         .unwrap_or_else(|_| {
             if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
         });
-    PathBuf::from(home).join(".jij").join("config.json")
+    PathBuf::from(home).join(".sysweaver").join("config.json")
 }
 
 /// 从文件加载用户配置
@@ -285,9 +285,9 @@ pub fn validate_model(model_str: &str) -> Result<String> {
     Ok(model_str.to_string())
 }
 
-/// 从环境变量自动检测 provider 名称（优先级：AGENT_UNIX_LLM_PROVIDER > ANTHROPIC_API_KEY > OPENAI_API_KEY）
+/// 从环境变量自动检测 provider 名称（优先级：SYSWEAVER_LLM_PROVIDER > ANTHROPIC_API_KEY > OPENAI_API_KEY）
 pub fn detect_provider_from_env() -> Option<String> {
-    if let Ok(p) = std::env::var("AGENT_UNIX_LLM_PROVIDER") {
+    if let Ok(p) = std::env::var("SYSWEAVER_LLM_PROVIDER") {
         return Some(p);
     }
     if std::env::var("ANTHROPIC_API_KEY").is_ok() {
@@ -333,7 +333,7 @@ impl LlmConfig {
 
         let base_url = if let Some(url) = base_url_cli {
             validate_base_url(url)?
-        } else if let Ok(url) = std::env::var("AGENT_UNIX_LLM_BASE_URL") {
+        } else if let Ok(url) = std::env::var("SYSWEAVER_LLM_BASE_URL") {
             validate_base_url(&url)?
         } else if let Some(ref config) = user_config {
             if let Some(url) = &config.base_url {
@@ -359,7 +359,7 @@ impl LlmConfig {
 
         let model = if let Some(m) = model_cli {
             validate_model(m)?
-        } else if let Ok(m) = std::env::var("AGENT_UNIX_LLM_MODEL") {
+        } else if let Ok(m) = std::env::var("SYSWEAVER_LLM_MODEL") {
             validate_model(&m)?
         } else if let Some(ref config) = user_config {
             if let Some(m) = &config.model {
@@ -385,7 +385,7 @@ impl LlmConfig {
 
         let api_key = if let Some(key) = api_key_cli {
             key.to_string()
-        } else if let Ok(key) = std::env::var("AGENT_UNIX_LLM_API_KEY") {
+        } else if let Ok(key) = std::env::var("SYSWEAVER_LLM_API_KEY") {
             key
         } else if let Some(ref config) = user_config {
             if let Some(key) = &config.api_key {
@@ -472,7 +472,7 @@ fn get_fallback_api_key(
                  快速配置（任选其一）：\n   \
                  • export ANTHROPIC_API_KEY=sk-ant-xxx   # 使用 Anthropic Claude\n   \
                  • export OPENAI_API_KEY=sk-xxx          # 使用 OpenAI GPT\n   \
-                 • jij config --setup                    # 交互式配置向导"
+                 • sysweaver config --setup                    # 交互式配置向导"
             ))
     } else {
         std::env::var("OPENAI_API_KEY")
@@ -481,7 +481,7 @@ fn get_fallback_api_key(
                  快速配置（任选其一）：\n   \
                  • export ANTHROPIC_API_KEY=sk-ant-xxx   # 使用 Anthropic Claude\n   \
                  • export OPENAI_API_KEY=sk-xxx          # 使用 OpenAI GPT\n   \
-                 • jij config --setup                    # 交互式配置向导"
+                 • sysweaver config --setup                    # 交互式配置向导"
             ))
     }
 }

@@ -45,7 +45,7 @@ pub struct AuditLogger {
 impl AuditLogger {
     pub fn new(session_id: &str) -> Self {
         let log_path = format!(
-            "{}/.jij/audit-{}.jsonl",
+            "{}/.sysweaver/audit-{}.jsonl",
             std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_else(|_| {
                     if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }

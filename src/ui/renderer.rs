@@ -47,7 +47,7 @@ pub fn draw(f: &mut Frame, state: &AppState) {
         Constraint::Length(1),      // StatusBar
         Constraint::Length(2),      // TabBar (1 row for text + 1 row for active underline)
         Constraint::Fill(1),        // 主内容区
-        Constraint::Length(3),      // InputBar（精简为 3 行）
+        Constraint::Length(2),      // InputBar（分隔线 + 输入行，紧贴终端底部）
     ])
     .areas(area);
 

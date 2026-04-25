@@ -1,13 +1,13 @@
 [package]
-name = "jij"
-version = "0.9.6"
+name = "sysweaver"
+version = "0.9.7"
 edition = "2021"
-authors = ["Agent Unix Team"]
-description = "A natural language OS management agent powered by AI"
+authors = ["SysWeaver Team"]
+description = "SysWeaver — a natural language OS management agent powered by AI"
 license = "MIT"
 
 [[bin]]
-name = "jij"
+name = "sysweaver"
 path = "src/main.rs"
 
 [dependencies]

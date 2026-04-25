@@ -177,7 +177,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         let welcome = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  agent-unix 已就绪。用自然语言描述你的需求。",
+                "  sysweaver 已就绪。用自然语言描述你的需求。",
                 Style::default().fg(theme::CLR_FG_MUTED),
             )),
             Line::from(""),

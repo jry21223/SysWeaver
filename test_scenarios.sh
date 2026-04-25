@@ -1,5 +1,5 @@
 #!/bin/bash
-# Agent Unix 场景自动化测试脚本
+# SysWeaver 场景自动化测试脚本
 # 覆盖评分表中的四类场景：基础操作、高危拦截、环境感知、连续任务
 # 使用方式：./test_scenarios.sh [--release] [--api-only]
 set -euo pipefail
@@ -31,10 +31,10 @@ fi
 
 # ─── 二进制路径 ───────────────────────────────────────────────────────────────
 if [ $USE_RELEASE -eq 1 ]; then
-    BINARY="./target/release/jij"
+    BINARY="./target/release/sysweaver"
     BUILD_CMD="cargo build --release"
 else
-    BINARY="./target/debug/jij"
+    BINARY="./target/debug/sysweaver"
     BUILD_CMD="cargo build"
 fi
 
@@ -150,7 +150,7 @@ fi
 section "场景 0a：欢迎信息与帮助系统"
 
 info "验证 chat --no-tui 模式展示系统信息…（需要有 API Key，跳过实际执行）"
-if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${AGENT_UNIX_LLM_API_KEY:-}" ]; then
+if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${SYSWEAVER_LLM_API_KEY:-}" ]; then
     # 通过 echo 快速退出，验证欢迎信息格式
     chat_out=$(echo "/exit" | timeout 15 "$BINARY" chat --no-tui 2>&1) || true
     if echo "$chat_out" | grep -qiE "OS|操作系统|主机|CPU"; then
@@ -194,7 +194,7 @@ pass "SAFE: process.manage list → 直接执行 (已通过单元测试)"
 # ─── Dry-Run 模式（不调用 API）───────────────────────────────────────────────
 section "场景 0c：Dry-Run 预览（无需 API）"
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${AGENT_UNIX_LLM_API_KEY:-}" ]; then
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${SYSWEAVER_LLM_API_KEY:-}" ]; then
     skip "Dry-run run 模式需要 API Key（用于 LLM 规划），跳过"
 else
     run_dry "查看磁盘" "查看磁盘使用情况" "预览"
@@ -203,13 +203,13 @@ fi
 
 # ─── API 场景测试 ─────────────────────────────────────────────────────────────
 HAS_API=0
-if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${AGENT_UNIX_LLM_API_KEY:-}" ]; then
+if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${SYSWEAVER_LLM_API_KEY:-}" ]; then
     HAS_API=1
 fi
 
 if [ $HAS_API -eq 0 ]; then
     section "场景 A/B/C/D（需要 API Key — 跳过）"
-    skip "未设置 ANTHROPIC_API_KEY / AGENT_UNIX_LLM_API_KEY，跳过 LLM 场景测试"
+    skip "未设置 ANTHROPIC_API_KEY / SYSWEAVER_LLM_API_KEY，跳过 LLM 场景测试"
     skip "在有 API Key 的环境中重新运行以完成完整测试"
 else
     # ── 场景 A：基础操作 ─────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ fi
 # ─── 审计日志验证 ─────────────────────────────────────────────────────────────
 section "审计日志验证"
 
-audit_dir="$HOME/.agent-unix"
+audit_dir="$HOME/.sysweaver"
 if [ -d "$audit_dir" ]; then
     audit_files=$(find "$audit_dir" -name "audit-*.jsonl" 2>/dev/null | wc -l)
     if [ "$audit_files" -gt 0 ]; then
@@ -371,7 +371,7 @@ if [ -d "$audit_dir" ]; then
         skip "暂无审计日志文件（还未执行过操作）"
     fi
 else
-    skip "审计目录 ~/.agent-unix 不存在（还未执行过操作）"
+    skip "审计目录 ~/.sysweaver 不存在（还未执行过操作）"
 fi
 
 # ─── Playbook 验证 ────────────────────────────────────────────────────────────

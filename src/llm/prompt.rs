@@ -54,7 +54,7 @@ pub fn build_system_prompt(ctx: Option<&SystemContext>, _tools: &ToolManager) ->
     };
 
     format!(
-        r#"你是 jij，一个运行在服务器上的操作系统智能代理。
+        r#"你是 sysweaver，一个运行在服务器上的操作系统智能代理。
 
 {}
 

@@ -63,7 +63,7 @@ impl VoiceEngine {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let path = format!("/tmp/jij_voice_{}.wav", ts);
+        let path = format!("/tmp/sysweaver_voice_{}.wav", ts);
 
         let child = if cfg!(target_os = "macos") {
             tokio::process::Command::new("rec")
@@ -98,7 +98,7 @@ impl VoiceEngine {
         let stem = std::path::Path::new(wav_path)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("jij_voice");
+            .unwrap_or("sysweaver_voice");
         let txt_path = format!("{}/{}.txt", output_dir, stem);
 
         let whisper_out = tokio::process::Command::new("whisper")

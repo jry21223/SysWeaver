@@ -18,15 +18,15 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: jij-macos-arm64
+            artifact: sysweaver-macos-arm64
 
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: jij-linux-x86_64
+            artifact: sysweaver-linux-x86_64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: jij-windows-x86_64.exe
+            artifact: sysweaver-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -52,12 +52,12 @@ jobs:
       - name: 重命名二进制文件（Unix）
         if: runner.os != 'Windows'
         run: |
-          cp target/${{ matrix.target }}/release/jij ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/sysweaver ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
 
       - name: 重命名二进制文件（Windows）
         if: runner.os == 'Windows'
-        run: copy target\${{ matrix.target }}\release\jij.exe ${{ matrix.artifact }}
+        run: copy target\${{ matrix.target }}\release\sysweaver.exe ${{ matrix.artifact }}
         shell: cmd
 
       - name: 获取二进制信息（Unix）
@@ -72,7 +72,7 @@ jobs:
       - name: 上传构件
         uses: actions/upload-artifact@v4
         with:
-          name: jij-${{ matrix.target }}
+          name: sysweaver-${{ matrix.target }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
@@ -107,24 +107,24 @@ jobs:
         with:
           files: releases/*
           body: |
-            # jij Release
+            # sysweaver Release
 
             此版本包含以下平台的二进制文件：
-            - **macOS arm64 (Apple Silicon)** - `jij-macos-arm64`
-            - **Linux x86_64** - `jij-linux-x86_64`
-            - **Windows x86_64** - `jij-windows-x86_64.exe`
+            - **macOS arm64 (Apple Silicon)** - `sysweaver-macos-arm64`
+            - **Linux x86_64** - `sysweaver-linux-x86_64`
+            - **Windows x86_64** - `sysweaver-windows-x86_64.exe`
 
             ## 使用方法
 
             ### macOS / Linux
             ```bash
-            chmod +x jij-macos-arm64
-            ./jij-macos-arm64 chat
+            chmod +x sysweaver-macos-arm64
+            ./sysweaver-macos-arm64 chat
             ```
 
             ### Windows
             ```cmd
-            jij-windows-x86_64.exe chat
+            sysweaver-windows-x86_64.exe chat
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

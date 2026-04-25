@@ -1,10 +1,10 @@
-# Agent Unix — CLAUDE.md
+# SysWeaver — CLAUDE.md
 
 > 这是 Claude Code 的项目上下文文件。每次开始工作前请先阅读此文件。
 
 ## 项目概述
 
-**Agent Unix** 是一个用 Rust 编写的操作系统智能代理，将自然语言转换为可控的 Linux 系统操作。
+**SysWeaver** 是一个用 Rust 编写的操作系统智能代理，将自然语言转换为可控的 Linux 系统操作。
 
 - 比赛：AI Hackathon 2026 · 超聚变 αFUSION 预赛
 - 语言：**Rust 1.75+**（强约束，不得改用其他语言）
@@ -88,7 +88,7 @@ src/
 - ✅ `RiskLevel::Critical` 的操作必须直接拒绝，不给用户确认机会
 - ✅ 所有 `Tool::execute` 实现都必须处理 `dry_run: bool` 参数
 - ✅ Rust 编译必须无 `warning`（使用 `#[allow()]` 时需注释原因）
-- ✅ API Key 通过环境变量配置（`AGENT_UNIX_LLM_API_KEY` 或官方变量）
+- ✅ API Key 通过环境变量配置（`SYSWEAVER_LLM_API_KEY` 或官方变量）
 - ✅ Base URL 必须是 HTTPS
 
 ## 开发命令
@@ -102,17 +102,17 @@ export ANTHROPIC_API_KEY=sk-ant-...
 cargo run -- chat
 
 # 自定义 Anthropic 端点（如代理/中转）
-export AGENT_UNIX_LLM_PROVIDER=anthropic
-export AGENT_UNIX_LLM_BASE_URL=https://your-anthropic-proxy.com
-export AGENT_UNIX_LLM_MODEL=claude-sonnet-4-5
-export AGENT_UNIX_LLM_API_KEY=your-key
+export SYSWEAVER_LLM_PROVIDER=anthropic
+export SYSWEAVER_LLM_BASE_URL=https://your-anthropic-proxy.com
+export SYSWEAVER_LLM_MODEL=claude-sonnet-4-5
+export SYSWEAVER_LLM_API_KEY=your-key
 cargo run -- chat
 
 # OpenAI-compatible Provider（OpenRouter、vLLM、LocalAI 等）
-export AGENT_UNIX_LLM_PROVIDER=openai-compatible
-export AGENT_UNIX_LLM_BASE_URL=https://api.openai.com  # 或自定义端点
-export AGENT_UNIX_LLM_MODEL=gpt-4o  # 或其他模型
-export AGENT_UNIX_LLM_API_KEY=your-key
+export SYSWEAVER_LLM_PROVIDER=openai-compatible
+export SYSWEAVER_LLM_BASE_URL=https://api.openai.com  # 或自定义端点
+export SYSWEAVER_LLM_MODEL=gpt-4o  # 或其他模型
+export SYSWEAVER_LLM_API_KEY=your-key
 cargo run -- chat
 
 # 或通过 CLI 参数配置
@@ -134,10 +134,10 @@ CLI 参数 > 环境变量 > 默认值：
 
 | 变量 | CLI 参数 | 说明 |
 |------|----------|------|
-| `AGENT_UNIX_LLM_PROVIDER` | `--provider` | `anthropic` 或 `openai-compatible` |
-| `AGENT_UNIX_LLM_BASE_URL` | `--base-url` | API 端点 URL |
-| `AGENT_UNIX_LLM_MODEL` | `--model` | 模型 ID |
-| `AGENT_UNIX_LLM_API_KEY` | - | API Key（优先于官方变量） |
+| `SYSWEAVER_LLM_PROVIDER` | `--provider` | `anthropic` 或 `openai-compatible` |
+| `SYSWEAVER_LLM_BASE_URL` | `--base-url` | API 端点 URL |
+| `SYSWEAVER_LLM_MODEL` | `--model` | 模型 ID |
+| `SYSWEAVER_LLM_API_KEY` | - | API Key（优先于官方变量） |
 | `ANTHROPIC_API_KEY` | - | Anthropic 官方变量（兼容） |
 | `OPENAI_API_KEY` | - | OpenAI 官方变量（兼容） |
 

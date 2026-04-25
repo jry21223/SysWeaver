@@ -230,7 +230,7 @@ impl Tool for FileWriteTool {
             path.hash(&mut h);
             chrono::Utc::now().timestamp_millis().hash(&mut h);
             let hash = h.finish();
-            let bak = format!("/tmp/.jij-bak-{:x}", hash);
+            let bak = format!("/tmp/.sysweaver-bak-{:x}", hash);
             if tokio::fs::copy(&path, &bak).await.is_ok() {
                 Some(bak)
             } else {

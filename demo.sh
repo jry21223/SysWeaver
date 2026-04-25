@@ -1,21 +1,21 @@
 #!/bin/bash
-# Agent Unix 演示脚本 - AI Hackathon 2026
+# SysWeaver 演示脚本 - AI Hackathon 2026
 
 echo "========================================"
-echo "  Agent Unix 演示"
+echo "  SysWeaver 演示"
 echo "========================================"
 echo
 
 # 检查 API Key
-if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$AGENT_UNIX_LLM_API_KEY" ]; then
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$SYSWEAVER_LLM_API_KEY" ]; then
     echo "⚠️  请先设置 API Key:"
     echo "   export ANTHROPIC_API_KEY=sk-ant-xxx"
     echo "   或"
-    echo "   export AGENT_UNIX_LLM_API_KEY=xxx"
+    echo "   export SYSWEAVER_LLM_API_KEY=xxx"
     exit 1
 fi
 
-BINARY="./target/release/agent-unix"
+BINARY="./target/release/sysweaver"
 
 # 编译检查
 if [ ! -f "$BINARY" ]; then

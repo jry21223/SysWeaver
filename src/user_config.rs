@@ -53,7 +53,7 @@ pub fn config_file_path() -> PathBuf {
         .unwrap_or_else(|_| {
             if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
         });
-    PathBuf::from(home).join(".jij").join("config.json")
+    PathBuf::from(home).join(".sysweaver").join("config.json")
 }
 
 /// 加载用户配置
@@ -171,7 +171,7 @@ fn prompt_api_key(selected: &ProviderPreset) -> Result<Option<String>> {
 pub fn interactive_config(initial_provider: Option<&str>) -> Result<UserConfig> {
     println!();
     println!("══════════════════════════════════════════════════════");
-    println!("  jij 配置向导");
+    println!("  sysweaver 配置向导");
     println!("══════════════════════════════════════════════════════");
     println!();
 
@@ -263,7 +263,7 @@ pub fn interactive_config(initial_provider: Option<&str>) -> Result<UserConfig> 
         }
 
         println!("🎉 现可以开始对话：");
-        println!("   jij chat");
+        println!("   sysweaver chat");
         println!();
 
         Ok(config)
@@ -321,7 +321,7 @@ pub fn show_current_config() {
         println!("⚠️  配置文件不存在");
         println!();
         println!("💡 创建配置：");
-        println!("   jij config --setup");
+        println!("   sysweaver config --setup");
     }
 }
 
@@ -340,7 +340,7 @@ pub fn delete_config() -> Result<()> {
 }
 
 /// 公开的完整授权 + 检测 + 保存流程。
-/// 扫描已知 AI 工具配置文件 → 询问用户授权 → 提取 Key → 保存到 ~/.jij/config.json。
+/// 扫描已知 AI 工具配置文件 → 询问用户授权 → 提取 Key → 保存到 ~/.sysweaver/config.json。
 /// 返回 Some(UserConfig) 表示成功；None 表示无文件或用户拒绝；Err 表示流程出错。
 pub fn try_auto_detect_with_consent() -> Result<Option<UserConfig>> {
     let found = scan_for_configs();
@@ -355,7 +355,7 @@ pub fn try_auto_detect_with_consent() -> Result<Option<UserConfig>> {
     }
     println!();
 
-    let consent = Confirm::new("是否允许 jij 读取以上配置文件中的 API Key？")
+    let consent = Confirm::new("是否允许 sysweaver 读取以上配置文件中的 API Key？")
         .with_default(true)
         .prompt()?;
 

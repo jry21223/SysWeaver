@@ -23,7 +23,7 @@ use crate::executor::ssh::SshConfig;
 use crate::ui::{
     AgentEvent,
     renderer,
-    state::{AppState, ChatLine},
+    state::{ActiveTab, AppState, ChatLine},
 };
 use crate::voice::VoiceEngine;
 use crate::watchdog::{AlertSeverity, create_watchdog_system};
@@ -102,7 +102,7 @@ pub async fn run_tui(
     let ctx = effective_ctx.clone();  // shadow: 后续欢迎/agent 都使用 effective ctx
     let welcome = format!(
         "╭─────────────────────────────────────────────────────────╮\n\
-         │  🤖  jij v{:<8}   {:<30}  │\n\
+         │  🤖  sysweaver v{:<8}   {:<30}  │\n\
          │      AI Hackathon 2026 · 超聚变 αFUSION 预赛           │\n\
          ╰─────────────────────────────────────────────────────────╯\n\n\
          ┌─ 📊 系统环境 ─────────────────────────────────────────────\n\
@@ -210,7 +210,7 @@ pub async fn run_tui(
                     continue;
                 }
                 "/help" => {
-                    let help = "📖 jij 帮助\n\n\
+                    let help = "📖 sysweaver 帮助\n\n\
                         【命令列表】\n\
                         /help           显示此帮助\n\
                         /status         查看当前系统状态\n\
@@ -716,25 +716,44 @@ async fn handle_event(
                 MouseEventKind::ScrollUp   => state.scroll_up(3),
                 MouseEventKind::ScrollDown => state.scroll_down(3),
                 MouseEventKind::Down(_) => {
-                    // 点击右侧面板的折叠/展开按钮
-                    // 布局：statusbar(1) + tabbar(1) = main_y=2
-                    // 折叠时：右侧 3 列 → 点击整个竖条展开
-                    // 展开时：▷ 在 status_area 的最右列第一行
                     let col = mouse_event.column;
                     let row = mouse_event.row;
-                    let main_y: u16 = 2; // statusbar + tabbar
                     let total_w: u16 = term_size.width;
-                    if state.side_collapsed {
-                        let strip_x = total_w.saturating_sub(3);
+                    // 布局复刻 renderer.rs 的垂直切分：
+                    //   statusbar(1) → tabbar(2) → main(fill) → input(2)
+                    // tabbar 占 row 1..=2，main 起始于 row 3
+                    let tabbar_top: u16 = 1;
+                    let tabbar_bot: u16 = 2;
+                    let main_y: u16 = 3;
+
+                    // ── ① 点击 TabBar：按三等分切换标签页 ─────────────
+                    if row >= tabbar_top && row <= tabbar_bot {
+                        let third = total_w / 3;
+                        let new_tab = if col < third {
+                            ActiveTab::Chat
+                        } else if col < third * 2 {
+                            ActiveTab::Monitor
+                        } else {
+                            ActiveTab::History
+                        };
+                        if state.active_tab != new_tab {
+                            state.active_tab = new_tab;
+                            state.scroll_to_bottom();
+                            state.mark_dirty();
+                        }
+                    }
+                    // ── ② 点击右侧面板的折叠/展开按钮 ─────────────────
+                    else if state.side_collapsed {
+                        // 折叠时：右侧 4 列竖条 → 整个区域可点击展开
+                        let strip_x = total_w.saturating_sub(4);
                         if col >= strip_x && row >= main_y {
                             state.side_collapsed = false;
                             state.mark_dirty();
                         }
                     } else {
-                        // ▷ 按钮在 status 面板的第一行最右侧字符
-                        let status_x = total_w * 70 / 100;
+                        // 展开时：▷ 按钮位于 status 面板第一行最右一格（main_y）
                         let button_x = total_w.saturating_sub(1);
-                        if col >= status_x && col == button_x && row == main_y {
+                        if col == button_x && row == main_y {
                             state.side_collapsed = true;
                             state.mark_dirty();
                         }

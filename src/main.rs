@@ -29,8 +29,8 @@ use user_config::{delete_config, interactive_config, show_current_config, try_au
 
 #[derive(Parser)]
 #[command(
-    name = "jij",
-    about = "jij — 自然语言操作系统管理代理",
+    name = "sysweaver",
+    about = "sysweaver — 自然语言操作系统管理代理",
     version = env!("CARGO_PKG_VERSION"),
     long_about = "
 用自然语言管理你的 Linux/macOS/Windows 系统。
@@ -40,9 +40,9 @@ use user_config::{delete_config, interactive_config, show_current_config, try_au
   export ANTHROPIC_API_KEY=sk-ant-xxx   # Anthropic Claude
   export OPENAI_API_KEY=sk-xxx          # OpenAI GPT
 
-  jij chat                  # 交互式对话（推荐）
-  jij run \"查看磁盘\"         # 单条指令
-  jij config --setup        # 交互式配置（可选）
+  sysweaver chat                  # 交互式对话（推荐）
+  sysweaver run \"查看磁盘\"         # 单条指令
+  sysweaver config --setup        # 交互式配置（可选）
 
 支持多种 LLM Provider：
   --provider anthropic    # Claude（原生 tool_use）
@@ -54,7 +54,7 @@ use user_config::{delete_config, interactive_config, show_current_config, try_au
 环境变量（无需 config 文件，直接设置即可使用）：
   ANTHROPIC_API_KEY          # Anthropic 官方（自动检测）
   OPENAI_API_KEY             # OpenAI 官方（自动检测）
-  AGENT_UNIX_LLM_API_KEY     # 通用 API Key（最高优先级）
+  SYSWEAVER_LLM_API_KEY     # 通用 API Key（最高优先级）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 "
 )]
@@ -224,7 +224,7 @@ async fn main() -> Result<()> {
         .with_env_filter(format!("agent_unix={}", log_level))
         .init();
 
-    info!("jij 启动，模式: {}", cli.mode);
+    info!("sysweaver 启动，模式: {}", cli.mode);
 
     match cli.command {
         // ═══════════════════════════════════════════════════════
@@ -259,9 +259,9 @@ async fn main() -> Result<()> {
                 }
 
                 println!("💡 配置方式：");
-                println!("   jij config --setup                # 交互式配置向导（推荐）");
-                println!("   jij config --setup --provider glm # 预选 provider");
-                println!("   jij config --show                 # 查看当前配置");
+                println!("   sysweaver config --setup                # 交互式配置向导（推荐）");
+                println!("   sysweaver config --setup --provider glm # 预选 provider");
+                println!("   sysweaver config --show                 # 查看当前配置");
                 return Ok(());
             }
 
@@ -277,11 +277,11 @@ async fn main() -> Result<()> {
 
             println!("💡 Config 命令用法：");
             println!();
-            println!("   jij config --setup                # 启动交互式配置向导（推荐）");
-            println!("   jij config --setup --provider glm # 预选 provider");
-            println!("   jij config --show                 # 显示当前配置");
-            println!("   jij config --list                 # 列出支持的 Provider");
-            println!("   jij config --delete               # 删除配置文件");
+            println!("   sysweaver config --setup                # 启动交互式配置向导（推荐）");
+            println!("   sysweaver config --setup --provider glm # 预选 provider");
+            println!("   sysweaver config --show                 # 显示当前配置");
+            println!("   sysweaver config --list                 # 列出支持的 Provider");
+            println!("   sysweaver config --delete               # 删除配置文件");
         }
 
         Commands::Playbooks => {
@@ -307,8 +307,8 @@ async fn main() -> Result<()> {
                 println!("   • {}", desc);
             }
             println!();
-            println!("💡 使用方式：jij explain <文件路径>");
-            println!("   示例：jij explain /etc/nginx/nginx.conf");
+            println!("💡 使用方式：sysweaver explain <文件路径>");
+            println!("   示例：sysweaver explain /etc/nginx/nginx.conf");
         }
 
         Commands::Watch { duration } => {
@@ -355,10 +355,10 @@ async fn main() -> Result<()> {
             }
             println!();
             println!("【快速开始】");
-            println!("   jij chat              # 交互式 TUI 对话");
-            println!("   jij chat --no-tui     # CLI 对话模式");
-            println!("   jij run \"查看磁盘\"    # 单条指令");
-            println!("   jij config --setup    # 配置 LLM Provider");
+            println!("   sysweaver chat              # 交互式 TUI 对话");
+            println!("   sysweaver chat --no-tui     # CLI 对话模式");
+            println!("   sysweaver run \"查看磁盘\"    # 单条指令");
+            println!("   sysweaver config --setup    # 配置 LLM Provider");
         }
 
         // ═══════════════════════════════════════════════════════
@@ -386,7 +386,7 @@ async fn main() -> Result<()> {
                     if is_tty() {
                         match try_auto_detect_with_consent() {
                             Ok(Some(_)) => {
-                                // 已保存到 ~/.jij/config.json，重新加载
+                                // 已保存到 ~/.sysweaver/config.json，重新加载
                                 match LlmConfig::load(
                                     cli.provider.as_deref(),
                                     cli.model.as_deref(),
@@ -399,7 +399,7 @@ async fn main() -> Result<()> {
                                         eprintln!("⚠️  LLM 配置加载失败（自动检测后）");
                                         eprintln!("   {}", e2);
                                         eprintln!();
-                                        eprintln!("💡 请运行 jij config --setup 手动配置");
+                                        eprintln!("💡 请运行 sysweaver config --setup 手动配置");
                                         std::process::exit(1);
                                     }
                                 }
@@ -411,7 +411,7 @@ async fn main() -> Result<()> {
                                 eprintln!();
                                 eprintln!("   {}", load_err);
                                 eprintln!();
-                                eprintln!("💡 快速配置：jij config --setup");
+                                eprintln!("💡 快速配置：sysweaver config --setup");
                                 std::process::exit(1);
                             }
                             Err(_) => {
@@ -489,7 +489,7 @@ async fn main() -> Result<()> {
                         let version = env!("CARGO_PKG_VERSION");
                         println!();
                         println!("\x1b[36m╭─────────────────────────────────────────────────────────╮\x1b[0m");
-                        println!("\x1b[36m│\x1b[0m  🤖 \x1b[1mjij v{:<6}\x1b[0m  \x1b[2m│\x1b[0m  {:<35}  \x1b[36m│\x1b[0m", version, mode_label);
+                        println!("\x1b[36m│\x1b[0m  🤖 \x1b[1msysweaver v{:<6}\x1b[0m  \x1b[2m│\x1b[0m  {:<35}  \x1b[36m│\x1b[0m", version, mode_label);
                         println!("\x1b[36m│\x1b[0m  \x1b[2mAI Hackathon 2026 · 超聚变 αFUSION 预赛\x1b[0m               \x1b[36m│\x1b[0m");
                         println!("\x1b[36m╰─────────────────────────────────────────────────────────╯\x1b[0m");
                         println!();
@@ -639,7 +639,7 @@ fn print_banner() {
     println!("\x1b[36m  ╔══════════════════════════════════════════════════════════╗\x1b[0m");
     println!("\x1b[36m  ║                                                          ║\x1b[0m");
     println!("\x1b[36m  ║   \x1b[1;35m     _  _  _ \x1b[0;36m                                         ║\x1b[0m");
-    println!("\x1b[36m  ║   \x1b[1;35m    (_)(_)(_)\x1b[0;36m     \x1b[1;37mjij — 自然语言操作系统代理\x1b[0;36m        ║\x1b[0m");
+    println!("\x1b[36m  ║   \x1b[1;35m    (_)(_)(_)\x1b[0;36m     \x1b[1;37msysweaver — 自然语言操作系统代理\x1b[0;36m        ║\x1b[0m");
     println!("\x1b[36m  ║   \x1b[1;35m    | || || |\x1b[0;36m     \x1b[2;37mAI Hackathon 2026 · αFUSION\x1b[0;36m      ║\x1b[0m");
     println!("\x1b[36m  ║   \x1b[1;35m _  | || || |\x1b[0;36m                                         ║\x1b[0m");
     println!("\x1b[36m  ║   \x1b[1;35m| |_| || || |\x1b[0;36m     \x1b[2;37mv{:<12}\x1b[0;36m                         ║\x1b[0m", version);
@@ -666,7 +666,7 @@ async fn run_chat_loop(
         .unwrap_or_else(|_| {
             if cfg!(windows) { "C:\\Temp".to_string() } else { "/tmp".to_string() }
         });
-    let history_path = format!("{}/.jij/history.txt", home);
+    let history_path = format!("{}/.sysweaver/history.txt", home);
     if let Some(parent) = std::path::Path::new(&history_path).parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             tracing::warn!("创建历史记录目录失败: {}", err);
@@ -1256,7 +1256,7 @@ fn is_valid_playbook_name(name: &str) -> bool {
 }
 
 fn print_help_message() {
-    println!("\n📖 jij 帮助");
+    println!("\n📖 sysweaver 帮助");
     println!();
     println!("【命令列表】");
     println!("   /help     显示此帮助");
@@ -1346,13 +1346,13 @@ async fn handle_export_inline(agent: &AgentLoop, path_hint: Option<&str>) {
     use std::fs;
 
     let ts = Local::now();
-    let default_name = format!("jij-session-{}.md", ts.format("%Y%m%d-%H%M%S"));
+    let default_name = format!("sysweaver-session-{}.md", ts.format("%Y%m%d-%H%M%S"));
     let path = path_hint.unwrap_or(&default_name);
 
     let mut md = String::new();
-    md.push_str(&format!("# jij 会话报告\n\n"));
+    md.push_str(&format!("# sysweaver 会话报告\n\n"));
     md.push_str(&format!("**导出时间：** {}\n\n", ts.format("%Y-%m-%d %H:%M:%S")));
-    md.push_str(&format!("**jij 版本：** v{}\n\n", env!("CARGO_PKG_VERSION")));
+    md.push_str(&format!("**sysweaver 版本：** v{}\n\n", env!("CARGO_PKG_VERSION")));
 
     let (total, success, _) = agent.session_stats();
     md.push_str("## 操作统计\n\n");
@@ -1392,7 +1392,7 @@ async fn handle_export_inline(agent: &AgentLoop, path_hint: Option<&str>) {
         md.push_str(&format!("- **包管理器：** {}\n", ctx.package_manager));
     }
 
-    md.push_str("\n---\n_由 jij AI 操作系统智能代理自动生成_\n");
+    md.push_str("\n---\n_由 sysweaver AI 操作系统智能代理自动生成_\n");
 
     match fs::write(path, &md) {
         Ok(()) => println!("\n📄 会话记录已导出到：{}\n", path),
