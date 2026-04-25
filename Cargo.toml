@@ -1,6 +1,6 @@
 [package]
 name = "sysweaver"
-version = "0.9.8"
+version = "1.0.0"
 edition = "2021"
 authors = ["SysWeaver Team"]
 description = "SysWeaver — a natural language OS management agent powered by AI"
