@@ -1,6 +1,6 @@
 [package]
 name = "jij"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 authors = ["Agent Unix Team"]
 description = "A natural language OS management agent powered by AI"

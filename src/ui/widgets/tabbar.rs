@@ -13,9 +13,10 @@ use crate::ui::theme;
 /// 活跃标签：琥珀色文字 + 琥珀色底部边框 + CLR_BG_PANEL 背景
 /// 非活跃标签：灰色文字 + 透明底部边框
 pub fn render(f: &mut Frame, area: Rect, active: &ActiveTab) {
+    // 设计稿：活跃用 ◇（空心），非活跃用 ◆（实心），由颜色区分活跃态
     let tabs = [
         ("◇", " 对话", ActiveTab::Chat),
-        ("◈", " 监控", ActiveTab::Monitor),
+        ("◆", " 监控", ActiveTab::Monitor),
         ("◆", " 历史", ActiveTab::History),
     ];
 
