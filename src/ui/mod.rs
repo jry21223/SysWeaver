@@ -71,4 +71,10 @@ pub enum AgentEvent {
 
     /// 语音 STT 转写结果（填入输入框）
     VoiceTranscription(String),
+
+    /// 后台进程列表采样结果（spawn_blocking 跑 `ps aux` 后回传）
+    ProcessListUpdate(Vec<crate::ui::state::ProcessRow>),
+
+    /// 后台 CPU 采样结果（spawn_blocking 跑 `top -l1` 或 /proc/stat 后回传）
+    CpuSampleUpdate(f32),
 }

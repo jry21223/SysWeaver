@@ -411,6 +411,9 @@ pub async fn run_tui(
     // SSH/本地系统信息每 30s 刷新一次
     let mut system_refresh_tick = tokio::time::interval(Duration::from_secs(30));
     system_refresh_tick.tick().await; // 跳过第一个立即触发
+    // 进程列表 + CPU 采样：每 2s 在后台 spawn_blocking 跑 ps/top，结果通过 event 通道回传
+    // 这样事件循环不会被 ps aux + top -l1 阻塞数百毫秒
+    let mut proc_refresh_tick = tokio::time::interval(Duration::from_secs(2));
     // 录音状态（按 F5 启动/停止）
     let mut recording: Option<RecordingState> = None;
 
@@ -430,7 +433,7 @@ pub async fn run_tui(
                 }
             }
 
-            // Spinner 动画 + 复制通知倒计时 + 进程列表刷新
+            // Spinner 动画 + 复制通知倒计时（不再做任何阻塞 IO）
             _ = spinner_tick.tick() => {
                 if state.is_thinking {
                     state.tick_spinner();
@@ -438,7 +441,22 @@ pub async fn run_tui(
                 if state.copy_notice_frames > 0 {
                     state.tick_copy_notice();
                 }
-                state.tick_process_list();
+            }
+
+            // 后台进程/CPU 采样：spawn_blocking 跑 ps/top，避免阻塞事件循环
+            _ = proc_refresh_tick.tick() => {
+                let tx = event_tx.clone();
+                tokio::spawn(async move {
+                    let res = tokio::task::spawn_blocking(|| {
+                        let procs = crate::ui::state::fetch_process_list();
+                        let cpu = crate::ui::state::sample_cpu_usage();
+                        (procs, cpu)
+                    }).await;
+                    if let Ok((procs, cpu)) = res {
+                        let _ = tx.send(AgentEvent::ProcessListUpdate(procs)).await;
+                        let _ = tx.send(AgentEvent::CpuSampleUpdate(cpu)).await;
+                    }
+                });
             }
 
             // 30s 系统信息刷新（SSH 或本地）
@@ -805,6 +823,14 @@ fn handle_agent_event(state: &mut AppState, event: AgentEvent) {
             state.input = text;
             state.cursor_pos = state.input.chars().count();
             state.mark_dirty();
+        }
+
+        AgentEvent::ProcessListUpdate(procs) => {
+            state.apply_process_list(procs);
+        }
+
+        AgentEvent::CpuSampleUpdate(cpu) => {
+            state.apply_cpu_sample(cpu);
         }
 
     }

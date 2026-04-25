@@ -2,54 +2,58 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::types::risk::RiskLevel;
 
-// ── 颜色定义（匹配 JSX 设计 oklch → RGB）────────────────────────────────────
-// JSX: AMBER = 'oklch(0.78 0.14 75)' → 温暖琥珀色
-pub const CLR_AMBER: Color    = Color::Rgb(227, 177, 82);
-// JSX: CYAN = 'oklch(0.78 0.14 220)' → 清冷青色
-pub const CLR_CYAN: Color     = Color::Rgb(87, 216, 226);
-// JSX: DIM = 'oklch(0.45 0.01 260)' → 次要文字灰蓝
-pub const CLR_DIM: Color      = Color::Rgb(100, 100, 120);
-// JSX: FG = 'oklch(0.88 0.01 260)' → 主文字浅灰白
-pub const CLR_FG: Color       = Color::Rgb(220, 220, 240);
-// JSX: FG_MUTED = 'oklch(0.62 0.01 260)' → 次要文字灰
-pub const CLR_FG_MUTED: Color = Color::Rgb(150, 150, 170);
-// JSX: BG = 'oklch(0.17 0.02 260)' → 深蓝黑背景
-pub const CLR_BG: Color       = Color::Rgb(32, 32, 48);
-// JSX: BG_PANEL = 'oklch(0.20 0.02 260)' → 面板背景
-pub const CLR_BG_PANEL: Color = Color::Rgb(40, 40, 56);
-// JSX: BG_INPUT = 'oklch(0.14 0.02 260)' → 输入框背景更深
-pub const CLR_BG_INPUT: Color = Color::Rgb(26, 26, 38);
-// JSX: RED = 'oklch(0.65 0.2 25)' → 错误红
-pub const CLR_RED: Color      = Color::Rgb(211, 97, 99);
-// JSX: GREEN = 'oklch(0.7 0.17 145)' → 成功绿
-pub const CLR_GREEN: Color    = Color::Rgb(80, 200, 120);
-// JSX: BORDER = 'oklch(0.28 0.02 260)' → 边框灰蓝
-pub const CLR_BORDER: Color   = Color::Rgb(60, 60, 90);
+// ── 颜色定义（精确匹配 JSX 设计稿 oklch → sRGB）─────────────────────────
+// 设计目标：Tokyo Night 冷暗底 + 暖琥珀强调，整体冷静专业。
+// 背景刻意压低明度（L≤0.20），让琥珀/青色 accent 更跳。
 
-// ── 衍生角色色（统一收编原本散落在 widget 里的硬编码）────────────────────
-pub const CLR_SSH: Color           = Color::Rgb(80, 180, 255);   // SSH 徽章 / 远程标签
-pub const CLR_WATCHDOG: Color      = Color::Rgb(255, 180, 50);   // watchdog 严重等级
-pub const CLR_WATCHDOG_MSG: Color  = Color::Rgb(255, 220, 100);  // watchdog 消息体 / "处理中"
-pub const CLR_PROGRESS_MID: Color  = Color::Rgb(190, 210, 80);   // 进度条中段（黄绿过渡）
-pub const CLR_PROVIDER: Color      = Color::Rgb(180, 180, 200);  // provider/model 文本
-pub const CLR_HINT: Color          = Color::Rgb(160, 160, 200);  // 任务提示
-pub const CLR_COPY_LINK: Color     = Color::Rgb(130, 170, 130);  // "复制" 链接
-pub const CLR_COPY_OK_BG: Color    = Color::Rgb(100, 220, 100);  // "✓ 已复制" 提示底色
-pub const CLR_IMPACT: Color        = Color::Rgb(220, 180, 140);  // modal 影响 tan
-pub const CLR_SUGGESTION: Color    = Color::Rgb(160, 220, 180);  // modal 建议 mint
-pub const CLR_BTN_BORDER: Color    = Color::Rgb(60, 60, 80);     // modal 按钮分隔线
-pub const CLR_BTN_BG_INACTIVE: Color = Color::Rgb(50, 50, 60);   // modal 未选中按钮背景
-pub const CLR_BTN_FG_INACTIVE: Color = Color::Rgb(160, 160, 160);// modal 未选中按钮文字
-pub const CLR_BTN_BG_DARK: Color   = Color::Rgb(40, 40, 40);     // modal 禁用按钮背景
+// AMBER = oklch(0.78 0.14 75) — 用户消息、模式徽章、活跃 tab
+pub const CLR_AMBER: Color    = Color::Rgb(220, 175, 95);
+// CYAN = oklch(0.78 0.14 220) — Agent 消息、系统标题、sparkline
+pub const CLR_CYAN: Color     = Color::Rgb(85, 200, 230);
+// DIM = oklch(0.45 0.01 260) — 弱化提示
+pub const CLR_DIM: Color      = Color::Rgb(95, 97, 105);
+// FG = oklch(0.88 0.01 260) — 主文字（带极弱的蓝绿冷调）
+pub const CLR_FG: Color       = Color::Rgb(216, 218, 224);
+// FG_MUTED = oklch(0.62 0.01 260) — 次要文字
+pub const CLR_FG_MUTED: Color = Color::Rgb(140, 143, 150);
+// BG = oklch(0.17 0.02 260) — 主背景：近黑深蓝
+pub const CLR_BG: Color       = Color::Rgb(20, 22, 28);
+// BG_PANEL = oklch(0.20 0.02 260) — 侧栏/活跃 tab 背景
+pub const CLR_BG_PANEL: Color = Color::Rgb(28, 30, 38);
+// BG_INPUT = oklch(0.14 0.02 260) — 输入栏（最深一档）
+pub const CLR_BG_INPUT: Color = Color::Rgb(13, 15, 22);
+// RED = oklch(0.65 0.2 25) — 危险/高占用
+pub const CLR_RED: Color      = Color::Rgb(225, 90, 70);
+// GREEN = oklch(0.7 0.17 145) — 成功/活跃服务
+pub const CLR_GREEN: Color    = Color::Rgb(50, 195, 110);
+// BORDER = oklch(0.28 0.02 260) — 分隔线
+pub const CLR_BORDER: Color   = Color::Rgb(48, 51, 60);
+
+// ── 衍生角色色（与主调统一冷静走向）─────────────────────────────────────
+pub const CLR_SSH: Color           = Color::Rgb(70, 165, 235);   // SSH 徽章（与 CYAN 同源稍偏蓝）
+pub const CLR_WATCHDOG: Color      = Color::Rgb(232, 165, 65);   // watchdog 严重等级（同 AMBER 系）
+pub const CLR_WATCHDOG_MSG: Color  = Color::Rgb(238, 200, 110);  // watchdog 消息体 / "处理中"
+pub const CLR_PROGRESS_MID: Color  = Color::Rgb(180, 200, 90);   // oklch(0.75 0.16 110) 黄绿过渡
+pub const CLR_PROVIDER: Color      = Color::Rgb(160, 165, 178);  // provider/model 文本
+pub const CLR_HINT: Color          = Color::Rgb(150, 152, 175);  // 任务提示
+pub const CLR_COPY_LINK: Color     = Color::Rgb(120, 160, 130);  // "复制" 链接
+pub const CLR_COPY_OK_BG: Color    = Color::Rgb(60, 200, 110);   // "✓ 已复制" 提示底色（贴近 GREEN）
+pub const CLR_IMPACT: Color        = Color::Rgb(212, 175, 130);  // modal 影响 tan
+pub const CLR_SUGGESTION: Color    = Color::Rgb(150, 210, 175);  // modal 建议 mint
+pub const CLR_BTN_BORDER: Color    = Color::Rgb(48, 51, 60);     // modal 按钮分隔线（同 BORDER）
+pub const CLR_BTN_BG_INACTIVE: Color = Color::Rgb(38, 41, 50);   // modal 未选中按钮背景
+pub const CLR_BTN_FG_INACTIVE: Color = Color::Rgb(140, 143, 150);// modal 未选中按钮文字（同 FG_MUTED）
+pub const CLR_BTN_BG_DARK: Color   = Color::Rgb(28, 30, 38);     // modal 禁用按钮背景（同 BG_PANEL）
 
 // ── 保留旧常量名（兼容现有代码）────────────────────────────────────────────
 pub const CLR_TOOL: Color      = CLR_AMBER;    // 工具调用：琥珀色
 pub const CLR_SUCCESS: Color   = CLR_GREEN;    // 成功：绿
 pub const CLR_ERROR: Color     = CLR_RED;      // 错误：红
-pub const CLR_WARNING: Color   = Color::Rgb(255, 200, 50);   // 警告：黄（保留）
-pub const CLR_DRYRUN: Color    = Color::Rgb(160, 160, 160); // DRY-RUN：灰
+pub const CLR_WARNING: Color   = Color::Rgb(232, 195, 70);   // 警告：金黄（与 AMBER 同源更亮）
+pub const CLR_DRYRUN: Color    = Color::Rgb(140, 143, 150);  // DRY-RUN：灰（同 FG_MUTED）
 pub const CLR_BORDER_HL: Color = CLR_AMBER;    // 高亮边框：琥珀色
-pub const CLR_STATUSBAR: Color = Color::Rgb(55, 55, 72);   // 状态栏背景（略深于 BG_PANEL）
+// oklch(0.22 0.03 260) — 状态栏稍亮于 BG_PANEL，让模式徽章更跳
+pub const CLR_STATUSBAR: Color = Color::Rgb(38, 41, 50);
 
 pub const CLR_MEDIUM: Color    = Color::Rgb(255, 200, 50);
 pub const CLR_HIGH: Color      = Color::Rgb(255, 140, 60);

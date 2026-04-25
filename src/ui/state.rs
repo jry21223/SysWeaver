@@ -48,9 +48,8 @@ pub struct AppState {
     pub messages: Vec<ChatLine>,
     pub scroll_offset: usize,
 
-    // ── 进程缓存（避免每帧 shell out）────────────────────────
+    // ── 进程缓存（由后台 spawn_blocking 每 ~2s 注入）─────────
     pub process_list: Vec<ProcessRow>,
-    pub process_list_tick: u8,  // 自上次刷新后的 tick 计数
 
     // ── CPU 使用率缓存（在 process tick 中同步采集）──────
     pub cpu_usage_pct: f32,
@@ -175,7 +174,6 @@ impl AppState {
             active_tab: ActiveTab::Chat,
             side_collapsed: false,
             process_list: Vec::new(),
-            process_list_tick: 0,
             cpu_usage_pct: 0.0,
             cpu_peak_pct: 0.0,
             cpu_history: Vec::new(),
@@ -448,23 +446,23 @@ impl AppState {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
-    /// 推进进程列表缓存（每次 spinner_tick 调用，~80ms）
-    /// 每 25 ticks（约 2 秒）刷新一次进程列表
-    pub fn tick_process_list(&mut self) {
-        self.process_list_tick = self.process_list_tick.wrapping_add(1);
-        if self.process_list_tick >= 25 || self.process_list.is_empty() {
-            self.process_list_tick = 0;
-            self.process_list = self::fetch_process_list();
-            let cpu = self::sample_cpu_usage();
-            self.cpu_usage_pct = cpu;
-            if cpu > self.cpu_peak_pct {
-                self.cpu_peak_pct = cpu;
-            }
-            self.cpu_history.push(cpu);
-            if self.cpu_history.len() > 20 {
-                self.cpu_history.remove(0);
-            }
+    /// 接收后台 spawn_blocking 采集到的进程快照
+    pub fn apply_process_list(&mut self, procs: Vec<ProcessRow>) {
+        self.process_list = procs;
+        self.mark_dirty();
+    }
+
+    /// 接收后台 spawn_blocking 采集到的 CPU 采样值并写入历史
+    pub fn apply_cpu_sample(&mut self, cpu: f32) {
+        self.cpu_usage_pct = cpu;
+        if cpu > self.cpu_peak_pct {
+            self.cpu_peak_pct = cpu;
         }
+        self.cpu_history.push(cpu);
+        if self.cpu_history.len() > 20 {
+            self.cpu_history.remove(0);
+        }
+        self.mark_dirty();
     }
 
     /// 获取当前 spinner 字符
@@ -474,8 +472,8 @@ impl AppState {
     }
 }
 
-/// 执行 ps 获取进程列表（不在热路径上调用，由 tick_process_list 限流）
-fn fetch_process_list() -> Vec<ProcessRow> {
+/// 执行 ps 获取进程列表 — 由后台 spawn_blocking 任务调用，不可在事件循环线程上调用
+pub(crate) fn fetch_process_list() -> Vec<ProcessRow> {
     let output = match std::process::Command::new("ps")
         .args(["aux"])
         .output()
@@ -510,8 +508,8 @@ fn fetch_process_list() -> Vec<ProcessRow> {
     rows
 }
 
-/// 采集当前 CPU 使用率百分比（macOS top / Linux /proc/stat 回退）
-fn sample_cpu_usage() -> f32 {
+/// 采集当前 CPU 使用率百分比 — 由后台 spawn_blocking 任务调用
+pub(crate) fn sample_cpu_usage() -> f32 {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("top")
