@@ -48,7 +48,7 @@ export DEEPSEEK_API_KEY=xxxxxxxx
 export GROQ_API_KEY=xxxxxxxx
 ```
 
-sysweaver 会自动检测已设置的 API Key 并选择对应 Provider，启动时显示检测结果。
+SysWeaver 会自动检测已设置的 API Key 并选择对应 Provider，启动时显示检测结果。
 
 **方式 C：交互式配置向导**
 
@@ -124,7 +124,7 @@ export PATH="$PATH:/path/to/sysweaver/target/release"
 # 编译后将 sysweaver.exe 添加到 PATH，设置 API Key 后即可使用
 $env:ANTHROPIC_API_KEY = "sk-ant-xxxxxxxx"
 sysweaver chat
-# sysweaver 会自动设置控制台为 UTF-8，中文显示正常
+# SysWeaver 会自动设置控制台为 UTF-8，中文显示正常
 ```
 
 ---
@@ -292,7 +292,7 @@ sysweaver --mode auto chat   # 自动模式（Medium 不询问）
 
 ## Playbook 系统
 
-Playbook 是可重复执行的操作序列。sysweaver 内置 6 个常用模板：
+Playbook 是可重复执行的操作序列。SysWeaver 内置 6 个常用模板：
 
 | Playbook | 功能 |
 |---------|------|
@@ -366,7 +366,7 @@ sysweaver --ssh admin@server.example.com:2222 --ssh-key ~/.ssh/id_ed25519 chat
 
 ## API Key 自动检测
 
-当没有配置 API Key 时，sysweaver 会自动扫描以下 AI 工具的配置文件：
+当没有配置 API Key 时，SysWeaver 会自动扫描以下 AI 工具的配置文件：
 
 | 工具 | 扫描路径 | 提取字段 |
 |------|---------|---------|
@@ -380,7 +380,7 @@ sysweaver --ssh admin@server.example.com:2222 --ssh-key ~/.ssh/id_ed25519 chat
 
 ## 图片分析
 
-在 iTerm2 等支持图片预览的终端中，可以直接将图片拖入或粘贴到输入框，sysweaver 会自动识别并以 Base64 格式发送给支持视觉能力的 LLM（如 claude-sonnet-4-6、gpt-4.1）。
+在 iTerm2 等支持图片预览的终端中，可以直接将图片拖入或粘贴到输入框，SysWeaver 会自动识别并以 Base64 格式发送给支持视觉能力的 LLM（如 claude-sonnet-4-6、gpt-4.1）。
 
 支持格式：PNG、JPG、JPEG、GIF、WebP、BMP（最大 20 MB）
 
