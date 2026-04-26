@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
 
 use crate::agent::memory::SystemContext;
+use crate::executor::ssh::SshConfig;
 use crate::types::risk::RiskLevel;
 
 /// 主内容区当前激活的标签页
@@ -469,16 +470,52 @@ impl AppState {
     }
 }
 
-/// 执行 ps 获取进程列表 — 由后台 spawn_blocking 任务调用，不可在事件循环线程上调用
-pub(crate) fn fetch_process_list() -> Vec<ProcessRow> {
-    let output = match std::process::Command::new("ps")
-        .args(["aux"])
-        .output()
-    {
-        Ok(o) => o,
+/// SSH 模式下通过远端 ps 获取进程列表（异步，不需要 spawn_blocking）
+pub(crate) async fn fetch_process_list_remote(ssh: &SshConfig) -> Vec<ProcessRow> {
+    let cmd = "ps aux --sort=-%cpu 2>/dev/null | head -51 || ps aux 2>/dev/null | head -51";
+    let stdout = match ssh.exec(cmd).await {
+        Ok((out, _, _, _)) => out,
         Err(_) => return Vec::new(),
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_ps_aux(&stdout)
+}
+
+/// SSH 模式下通过远端 top/proc 采集 CPU 使用率
+pub(crate) async fn sample_cpu_usage_remote(ssh: &SshConfig) -> f32 {
+    // 优先尝试 Linux top；回落到 macOS top -l 1；都失败回 0
+    let cmd = "top -bn1 2>/dev/null | grep -E '^%Cpu|^Cpu' | head -1 \
+               || top -l 1 -n 0 2>/dev/null | grep 'CPU usage'";
+    let stdout = match ssh.exec(cmd).await {
+        Ok((out, _, _, _)) => out,
+        Err(_) => return 0.0,
+    };
+    for line in stdout.lines() {
+        // Linux: "%Cpu(s):  5.2 us,  2.1 sy, ..."
+        if line.starts_with("%Cpu") || line.starts_with("Cpu") {
+            if let Some(us) = line.split("us").next() {
+                if let Some(num) = us.split_whitespace().last() {
+                    if let Ok(v) = num.parse::<f32>() {
+                        return v;
+                    }
+                }
+            }
+        }
+        // macOS: "CPU usage: 5.27% user, 8.12% sys, 86.60% idle"
+        if line.contains("CPU usage") {
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            if toks.len() >= 2 {
+                let idle = toks[toks.len() - 2].trim_end_matches('%');
+                if let Ok(idle) = idle.parse::<f32>() {
+                    return (100.0 - idle).max(0.0);
+                }
+            }
+        }
+    }
+    0.0
+}
+
+/// 解析 `ps aux` 输出为 ProcessRow 列表（共用本地/远端解析逻辑）
+fn parse_ps_aux(stdout: &str) -> Vec<ProcessRow> {
     let mut rows: Vec<ProcessRow> = stdout
         .lines()
         .skip(1) // 跳过标题行
@@ -503,6 +540,19 @@ pub(crate) fn fetch_process_list() -> Vec<ProcessRow> {
     rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
     rows.truncate(50);
     rows
+}
+
+/// 执行 ps 获取进程列表 — 由后台 spawn_blocking 任务调用，不可在事件循环线程上调用
+pub(crate) fn fetch_process_list() -> Vec<ProcessRow> {
+    let output = match std::process::Command::new("ps")
+        .args(["aux"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_ps_aux(&stdout)
 }
 
 /// 采集当前 CPU 使用率百分比 — 由后台 spawn_blocking 任务调用

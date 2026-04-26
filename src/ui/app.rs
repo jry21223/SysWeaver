@@ -26,7 +26,7 @@ use crate::ui::{
     state::{ActiveTab, AppState, ChatLine},
 };
 use crate::voice::VoiceEngine;
-use crate::watchdog::{AlertSeverity, create_watchdog_system};
+use crate::watchdog::{AlertSeverity, create_watchdog_system, create_watchdog_system_with_ssh};
 
 // 录音状态（local to run_tui）
 struct RecordingState {
@@ -333,10 +333,14 @@ pub async fn run_tui(
         }
     });
 
-    // ── 启动 Watchdog 后台监控（TUI 模式下把告警推送到事件流）────────────
+    // ── 启动 Watchdog 后台监控（SSH 模式下监控远端主机）────────────────────
     let watchdog_event_tx = event_tx.clone();
+    let watchdog_ssh = ssh_config.clone();
     tokio::spawn(async move {
-        let (watchdog, mut handler) = create_watchdog_system();
+        let (watchdog, mut handler) = match watchdog_ssh {
+            Some(ssh) => create_watchdog_system_with_ssh(ssh),
+            None => create_watchdog_system(),
+        };
         watchdog.start();
         while let Some(alert) = handler.alert_rx.recv().await {
             let severity = match alert.severity {
@@ -408,23 +412,33 @@ pub async fn run_tui(
                 }
             }
 
-            // 后台进程/CPU 采样：spawn_blocking 跑 ps/top，避免阻塞事件循环
+            // 后台进程/CPU 采样：本地走 spawn_blocking 跑 ps/top；SSH 模式则
+            // 通过 ssh.exec 异步采集远端主机数据，否则监控面板将错误展示本机状态。
             _ = proc_refresh_tick.tick() => {
                 use std::sync::atomic::Ordering;
-                // 上一轮还没回来就跳过——避免 top 卡住时 runtime 任务无限累积
                 if !proc_busy.swap(true, Ordering::AcqRel) {
                     let tx = event_tx.clone();
                     let busy = proc_busy.clone();
+                    let ssh = ssh_config.clone();
                     tokio::spawn(async move {
-                        let res = tokio::task::spawn_blocking(|| {
-                            let procs = crate::ui::state::fetch_process_list();
-                            let cpu = crate::ui::state::sample_cpu_usage();
-                            (procs, cpu)
-                        }).await;
-                        if let Ok((procs, cpu)) = res {
-                            let _ = tx.send(AgentEvent::ProcessListUpdate(procs)).await;
-                            let _ = tx.send(AgentEvent::CpuSampleUpdate(cpu)).await;
-                        }
+                        let (procs, cpu) = match ssh {
+                            Some(ssh) => {
+                                let procs = crate::ui::state::fetch_process_list_remote(&ssh).await;
+                                let cpu = crate::ui::state::sample_cpu_usage_remote(&ssh).await;
+                                (procs, cpu)
+                            }
+                            None => {
+                                tokio::task::spawn_blocking(|| {
+                                    let procs = crate::ui::state::fetch_process_list();
+                                    let cpu = crate::ui::state::sample_cpu_usage();
+                                    (procs, cpu)
+                                })
+                                .await
+                                .unwrap_or_else(|_| (Vec::new(), 0.0))
+                            }
+                        };
+                        let _ = tx.send(AgentEvent::ProcessListUpdate(procs)).await;
+                        let _ = tx.send(AgentEvent::CpuSampleUpdate(cpu)).await;
                         busy.store(false, Ordering::Release);
                     });
                 }

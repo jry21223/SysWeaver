@@ -5,6 +5,8 @@ use tokio::sync::mpsc::{channel, Sender, Receiver};
 use tokio::sync::watch;
 use tokio::time::interval;
 
+use crate::executor::ssh::SshConfig;
+
 /// Watchdog 监控系统：后台监控资源使用，异常时发送告警
 pub struct Watchdog {
     /// 监控规则
@@ -15,6 +17,8 @@ pub struct Watchdog {
     running: Arc<std::sync::atomic::AtomicBool>,
     /// 关闭信号发送端（broadcast via watch channel）
     shutdown_tx: watch::Sender<bool>,
+    /// SSH 远程模式配置（Some = 监控远端主机，None = 监控本机）
+    ssh: Option<Arc<SshConfig>>,
 }
 
 /// 监控规则
@@ -93,11 +97,21 @@ impl Watchdog {
             alert_tx,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_tx,
+            ssh: None,
         }
     }
 
     /// 创建带默认规则的 Watchdog
     pub fn with_default_rules(alert_tx: Sender<Alert>) -> Self {
+        Self::with_default_rules_inner(alert_tx, None)
+    }
+
+    /// 创建带默认规则、监控远端主机的 Watchdog
+    pub fn with_default_rules_and_ssh(alert_tx: Sender<Alert>, ssh: SshConfig) -> Self {
+        Self::with_default_rules_inner(alert_tx, Some(Arc::new(ssh)))
+    }
+
+    fn with_default_rules_inner(alert_tx: Sender<Alert>, ssh: Option<Arc<SshConfig>>) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let rules = vec![
             MonitorRule {
@@ -139,6 +153,7 @@ impl Watchdog {
             alert_tx,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_tx,
+            ssh,
         }
     }
 
@@ -155,6 +170,7 @@ impl Watchdog {
             let tx = self.alert_tx.clone();
             let running = self.running.clone();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
+            let ssh = self.ssh.clone();
 
             tokio::spawn(async move {
                 let mut timer = interval(Duration::from_secs(rule.interval_secs));
@@ -171,7 +187,7 @@ impl Watchdog {
                             if !running.load(std::sync::atomic::Ordering::SeqCst) {
                                 break;
                             }
-                            if let Ok(value) = check_metric(&rule.metric) {
+                            if let Ok(value) = check_metric(&rule.metric, ssh.as_deref()).await {
                                 if should_alert(value, rule.threshold, &rule.metric) {
                                     let alert = Alert {
                                         rule_name: rule.name.clone(),
@@ -207,18 +223,45 @@ impl Watchdog {
     }
 }
 
+/// 通过 ssh 或本地 sh 执行一段 shell 命令，返回 (stdout, exit_code)
+async fn run_shell(cmd: &str, ssh: Option<&SshConfig>) -> Result<(String, i32)> {
+    if let Some(s) = ssh {
+        let (stdout, _stderr, code, _dur) = s.exec(cmd).await?;
+        return Ok((stdout, code));
+    }
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .await?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    Ok((stdout, code))
+}
+
+/// 校验挂载点路径只包含安全字符（防止 SSH 命令注入）
+fn validate_mount_point(p: &str) -> bool {
+    !p.is_empty()
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.'))
+}
+
+/// 校验进程/服务名只包含安全字符
+fn validate_unit_name(p: &str) -> bool {
+    !p.is_empty()
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
+}
+
 /// 检查指标当前值
-fn check_metric(metric: &MetricType) -> Result<f64> {
+async fn check_metric(metric: &MetricType, ssh: Option<&SshConfig>) -> Result<f64> {
     match metric {
         MetricType::DiskUsage { mount_point } => {
-            // 使用 df 命令获取磁盘使用率
-            let output = std::process::Command::new("df")
-                .arg("-h")
-                .arg(mount_point)
-                .output()?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            // 解析 df 输出：Filesystem Size Used Avail Use% Mountedon
+            if !validate_mount_point(mount_point) {
+                return Err(anyhow::anyhow!("挂载点路径包含非法字符: {}", mount_point));
+            }
+            let cmd = format!("df -h {} 2>/dev/null", mount_point);
+            let (stdout, _) = run_shell(&cmd, ssh).await?;
             for line in stdout.lines().skip(1) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 5 {
@@ -231,13 +274,7 @@ fn check_metric(metric: &MetricType) -> Result<f64> {
             Err(anyhow::anyhow!("无法解析磁盘使用率"))
         }
         MetricType::MemoryUsage => {
-            // 使用 free 命令获取内存使用率
-            let output = std::process::Command::new("free")
-                .arg("-m")
-                .output()?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            // 解析 free 输出
+            let (stdout, _) = run_shell("free -m 2>/dev/null", ssh).await?;
             for line in stdout.lines() {
                 if line.starts_with("Mem:") {
                     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -253,34 +290,24 @@ fn check_metric(metric: &MetricType) -> Result<f64> {
             Err(anyhow::anyhow!("无法解析内存使用率"))
         }
         MetricType::CpuUsage => {
-            // 简化实现：使用 top 命令（实际应该用更精确的方法）
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'")
-                .output()?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            stdout.parse::<f64>().map_err(|e| anyhow::anyhow!("CPU 解析失败: {}", e))
+            let (stdout, _) = run_shell("top -bn1 2>/dev/null | grep 'Cpu(s)' | awk '{print $2}'", ssh).await?;
+            stdout.trim().parse::<f64>().map_err(|e| anyhow::anyhow!("CPU 解析失败: {}", e))
         }
         MetricType::ProcessRunning { process_name } => {
-            // 检查进程是否存在
-            let output = std::process::Command::new("pgrep")
-                .arg("-x")
-                .arg(process_name)
-                .output()?;
-
-            // 存在返回 1，不存在返回 0
-            Ok(if output.status.success() { 1.0 } else { 0.0 })
+            if !validate_unit_name(process_name) {
+                return Err(anyhow::anyhow!("进程名包含非法字符: {}", process_name));
+            }
+            let cmd = format!("pgrep -x {} >/dev/null 2>&1 && echo yes || echo no", process_name);
+            let (stdout, _) = run_shell(&cmd, ssh).await?;
+            Ok(if stdout.trim() == "yes" { 1.0 } else { 0.0 })
         }
         MetricType::ServiceRunning { service_name } => {
-            // 检查服务状态
-            let output = std::process::Command::new("systemctl")
-                .arg("is-active")
-                .arg(service_name)
-                .output()?;
-
-            let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Ok(if status == "active" { 1.0 } else { 0.0 })
+            if !validate_unit_name(service_name) {
+                return Err(anyhow::anyhow!("服务名包含非法字符: {}", service_name));
+            }
+            let cmd = format!("systemctl is-active {} 2>/dev/null", service_name);
+            let (stdout, _) = run_shell(&cmd, ssh).await?;
+            Ok(if stdout.trim() == "active" { 1.0 } else { 0.0 })
         }
     }
 }
@@ -384,6 +411,16 @@ pub fn create_watchdog_system() -> (Watchdog, AlertHandler) {
     let (alert_tx, alert_rx) = channel(100);
 
     let watchdog = Watchdog::with_default_rules(alert_tx);
+    let handler = AlertHandler::new(alert_rx);
+
+    (watchdog, handler)
+}
+
+/// 创建监控远端主机（SSH）的 Watchdog 系统
+pub fn create_watchdog_system_with_ssh(ssh: SshConfig) -> (Watchdog, AlertHandler) {
+    let (alert_tx, alert_rx) = channel(100);
+
+    let watchdog = Watchdog::with_default_rules_and_ssh(alert_tx, ssh);
     let handler = AlertHandler::new(alert_rx);
 
     (watchdog, handler)
