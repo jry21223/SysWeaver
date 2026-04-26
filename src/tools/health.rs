@@ -4,6 +4,7 @@ use serde_json::json;
 use tokio::process::Command;
 
 use super::Tool;
+use crate::executor::ssh::SshConfig;
 use crate::types::tool::ToolResult;
 
 /// 系统健康诊断工具 — 综合评估磁盘、内存、CPU、进程、服务和日志
@@ -68,105 +69,112 @@ impl Tool for HealthCheckTool {
                 "将运行：磁盘/内存/CPU/进程/服务/日志综合诊断，生成健康报告",
             ));
         }
-
-        let checks_val = args["checks"].as_array();
-        let run_all = checks_val.map_or(true, |arr| {
-            arr.is_empty() || arr.iter().any(|v| v.as_str() == Some("all"))
-        });
-        let want = |name: &str| -> bool {
-            run_all || checks_val.map_or(false, |arr| {
-                arr.iter().any(|v| v.as_str() == Some(name))
-            })
-        };
-
-        let disk_warn = args["disk_warn_pct"].as_u64().unwrap_or(80) as u32;
-        let disk_crit = args["disk_crit_pct"].as_u64().unwrap_or(90) as u32;
-        let mem_warn  = args["mem_warn_pct"].as_u64().unwrap_or(80) as u32;
-        let mem_crit  = args["mem_crit_pct"].as_u64().unwrap_or(90) as u32;
-
-        let mut sections: Vec<String> = Vec::new();
-        let mut overall_ok = true;
-        let mut critical_count = 0u32;
-        let mut warning_count  = 0u32;
-
-        // ── 磁盘检查 ────────────────────────────────────────────────────────
-        if want("disk") {
-            let section = check_disk(disk_warn, disk_crit).await;
-            if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
-            if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
-            sections.push(section);
-        }
-
-        // ── 内存检查 ────────────────────────────────────────────────────────
-        if want("memory") {
-            let section = check_memory(mem_warn, mem_crit).await;
-            if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
-            if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
-            sections.push(section);
-        }
-
-        // ── CPU 负载 ────────────────────────────────────────────────────────
-        if want("cpu") {
-            let section = check_cpu().await;
-            if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
-            if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
-            sections.push(section);
-        }
-
-        // ── 高资源进程 ──────────────────────────────────────────────────────
-        if want("process") {
-            let section = check_top_processes().await;
-            sections.push(section);
-        }
-
-        // ── 关键服务 ────────────────────────────────────────────────────────
-        if want("service") {
-            let section = check_services().await;
-            if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
-            if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
-            sections.push(section);
-        }
-
-        // ── 近期错误日志 ────────────────────────────────────────────────────
-        if want("log") {
-            let section = check_recent_errors().await;
-            if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
-            if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
-            sections.push(section);
-        }
-
-        // ── 汇总行 ──────────────────────────────────────────────────────────
-        let overall_status = if overall_ok {
-            "✅ 整体状态：健康 (OK)"
-        } else if critical_count > 0 {
-            "🚨 整体状态：存在严重问题 (CRITICAL)"
-        } else {
-            "⚠️  整体状态：存在警告 (WARNING)"
-        };
-
-        let summary = format!(
-            "{}\n   CRITICAL 项：{}  |  WARNING 项：{}",
-            overall_status, critical_count, warning_count
-        );
-
-        let mut output = vec![
-            "═══════════════════════════════════════════════════".to_string(),
-            "        系统健康诊断报告 (health.check)            ".to_string(),
-            "═══════════════════════════════════════════════════".to_string(),
-            summary,
-            "───────────────────────────────────────────────────".to_string(),
-        ];
-        output.extend(sections);
-        output.push("═══════════════════════════════════════════════════".to_string());
-
-        Ok(ToolResult::success(self.name(), &output.join("\n"), output.len() as u64))
+        run_health_check(args, None).await
     }
+}
+
+/// SSH 远程模式入口（由 tools::dispatch_ssh_health 调用）。
+/// 与本地版本共享 run_health_check 实现，仅 run_cmd 路由到 ssh.exec。
+pub(crate) async fn execute_remote(args: &serde_json::Value, ssh: &SshConfig) -> Result<ToolResult> {
+    run_health_check(args, Some(ssh)).await
+}
+
+async fn run_health_check(args: &serde_json::Value, ssh: Option<&SshConfig>) -> Result<ToolResult> {
+    let checks_val = args["checks"].as_array();
+    let run_all = checks_val.map_or(true, |arr| {
+        arr.is_empty() || arr.iter().any(|v| v.as_str() == Some("all"))
+    });
+    let want = |name: &str| -> bool {
+        run_all || checks_val.map_or(false, |arr| {
+            arr.iter().any(|v| v.as_str() == Some(name))
+        })
+    };
+
+    let disk_warn = args["disk_warn_pct"].as_u64().unwrap_or(80) as u32;
+    let disk_crit = args["disk_crit_pct"].as_u64().unwrap_or(90) as u32;
+    let mem_warn  = args["mem_warn_pct"].as_u64().unwrap_or(80) as u32;
+    let mem_crit  = args["mem_crit_pct"].as_u64().unwrap_or(90) as u32;
+
+    let mut sections: Vec<String> = Vec::new();
+    let mut overall_ok = true;
+    let mut critical_count = 0u32;
+    let mut warning_count  = 0u32;
+
+    if want("disk") {
+        let section = check_disk(disk_warn, disk_crit, ssh).await;
+        if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
+        if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
+        sections.push(section);
+    }
+
+    if want("memory") {
+        let section = check_memory(mem_warn, mem_crit, ssh).await;
+        if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
+        if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
+        sections.push(section);
+    }
+
+    if want("cpu") {
+        let section = check_cpu(ssh).await;
+        if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
+        if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
+        sections.push(section);
+    }
+
+    if want("process") {
+        let section = check_top_processes(ssh).await;
+        sections.push(section);
+    }
+
+    if want("service") {
+        let section = check_services(ssh).await;
+        if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
+        if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
+        sections.push(section);
+    }
+
+    if want("log") {
+        let section = check_recent_errors(ssh).await;
+        if section.contains("CRITICAL") { critical_count += 1; overall_ok = false; }
+        if section.contains("WARNING")  { warning_count  += 1; overall_ok = false; }
+        sections.push(section);
+    }
+
+    let overall_status = if overall_ok {
+        "✅ 整体状态：健康 (OK)"
+    } else if critical_count > 0 {
+        "🚨 整体状态：存在严重问题 (CRITICAL)"
+    } else {
+        "⚠️  整体状态：存在警告 (WARNING)"
+    };
+
+    let host_label = match ssh {
+        Some(s) => format!(" [SSH:{}]", s.display()),
+        None => String::new(),
+    };
+
+    let summary = format!(
+        "{}{}\n   CRITICAL 项：{}  |  WARNING 项：{}",
+        overall_status, host_label, critical_count, warning_count
+    );
+
+    let mut output = vec![
+        "═══════════════════════════════════════════════════".to_string(),
+        "        系统健康诊断报告 (health.check)            ".to_string(),
+        "═══════════════════════════════════════════════════".to_string(),
+        summary,
+        "───────────────────────────────────────────────────".to_string(),
+    ];
+    output.extend(sections);
+    output.push("═══════════════════════════════════════════════════".to_string());
+
+    Ok(ToolResult::success("health.check", &output.join("\n"), output.len() as u64))
 }
 
 // ── 各子检查函数 ─────────────────────────────────────────────────────────────
 
-async fn check_disk(warn_pct: u32, crit_pct: u32) -> String {
-    let output = run_cmd("df -h --output=target,pcent,size,used,avail 2>/dev/null || df -h 2>&1")
+async fn check_disk(warn_pct: u32, crit_pct: u32, ssh: Option<&SshConfig>) -> String {
+    let output = run_cmd("df -h --output=target,pcent,size,used,avail 2>/dev/null || df -h 2>&1", ssh)
         .await
         .unwrap_or_else(|e| e.to_string());
 
@@ -199,9 +207,10 @@ async fn check_disk(warn_pct: u32, crit_pct: u32) -> String {
     lines.join("\n")
 }
 
-async fn check_memory(warn_pct: u32, crit_pct: u32) -> String {
+async fn check_memory(warn_pct: u32, crit_pct: u32, ssh: Option<&SshConfig>) -> String {
     let output = run_cmd(
-        "free -b 2>/dev/null || vm_stat 2>/dev/null || echo 'memory_unavailable'"
+        "free -b 2>/dev/null || vm_stat 2>/dev/null || echo 'memory_unavailable'",
+        ssh,
     ).await.unwrap_or_default();
 
     let mut lines = vec!["【内存使用率】".to_string()];
@@ -273,9 +282,9 @@ async fn check_memory(warn_pct: u32, crit_pct: u32) -> String {
     lines.join("\n")
 }
 
-async fn check_cpu() -> String {
-    let uptime_out = run_cmd("uptime 2>&1").await.unwrap_or_default();
-    let nproc_out  = run_cmd("nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1")
+async fn check_cpu(ssh: Option<&SshConfig>) -> String {
+    let uptime_out = run_cmd("uptime 2>&1", ssh).await.unwrap_or_default();
+    let nproc_out  = run_cmd("nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1", ssh)
         .await.unwrap_or_else(|_| "1".to_string());
     let nproc: f64 = nproc_out.trim().parse().unwrap_or(1.0);
 
@@ -319,9 +328,10 @@ async fn check_cpu() -> String {
     lines.join("\n")
 }
 
-async fn check_top_processes() -> String {
+async fn check_top_processes(ssh: Option<&SshConfig>) -> String {
     let out = run_cmd(
-        "ps aux --sort=-%cpu 2>/dev/null | head -6 || ps -arcwwwxo 'command pid %cpu %mem' 2>/dev/null | head -6"
+        "ps aux --sort=-%cpu 2>/dev/null | head -6 || ps -arcwwwxo 'command pid %cpu %mem' 2>/dev/null | head -6",
+        ssh,
     ).await.unwrap_or_default();
 
     let mut lines = vec!["【高资源进程 (Top 5 CPU)】".to_string()];
@@ -331,9 +341,10 @@ async fn check_top_processes() -> String {
     lines.join("\n")
 }
 
-async fn check_services() -> String {
+async fn check_services(ssh: Option<&SshConfig>) -> String {
     let systemctl_out = run_cmd(
-        "systemctl --failed --no-pager --no-legend 2>/dev/null | head -10"
+        "systemctl --failed --no-pager --no-legend 2>/dev/null | head -10",
+        ssh,
     ).await.unwrap_or_default();
 
     let mut lines = vec!["【关键服务状态】".to_string()];
@@ -353,7 +364,7 @@ async fn check_services() -> String {
 
     // 额外检查 sshd / cron
     for svc in &["sshd", "ssh", "cron", "crond"] {
-        let status = run_cmd(&format!("systemctl is-active {} 2>/dev/null", svc))
+        let status = run_cmd(&format!("systemctl is-active {} 2>/dev/null", svc), ssh)
             .await.unwrap_or_default();
         let active = status.trim() == "active";
         if active {
@@ -364,7 +375,7 @@ async fn check_services() -> String {
     lines.join("\n")
 }
 
-async fn check_recent_errors() -> String {
+async fn check_recent_errors(ssh: Option<&SshConfig>) -> String {
     let cmds = [
         "journalctl -p err -n 20 --no-pager 2>/dev/null",
         "grep -i 'error\\|critical\\|panic' /var/log/syslog 2>/dev/null | tail -20",
@@ -374,7 +385,7 @@ async fn check_recent_errors() -> String {
     let mut lines = vec!["【近期系统错误日志 (最近 20 条)】".to_string()];
 
     for cmd in &cmds {
-        let out = run_cmd(cmd).await.unwrap_or_default();
+        let out = run_cmd(cmd, ssh).await.unwrap_or_default();
         if !out.trim().is_empty() && !out.contains("-- No entries --") {
             let count = out.lines().count();
             if count > 0 {
@@ -394,7 +405,11 @@ async fn check_recent_errors() -> String {
     lines.join("\n")
 }
 
-async fn run_cmd(cmd: &str) -> Result<String> {
+async fn run_cmd(cmd: &str, ssh: Option<&SshConfig>) -> Result<String> {
+    if let Some(s) = ssh {
+        let (stdout, stderr, _exit, _dur) = s.exec(cmd).await?;
+        return Ok(if stdout.is_empty() { stderr } else { stdout });
+    }
     let out = Command::new("sh")
         .arg("-c")
         .arg(cmd)
