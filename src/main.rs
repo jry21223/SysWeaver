@@ -46,7 +46,7 @@ use user_config::{delete_config, interactive_config, show_current_config, try_au
 
 支持多种 LLM Provider：
   --provider anthropic    # Claude（原生 tool_use）
-  --provider openai       # GPT-4o
+  --provider openai       # GPT-5.5
   --provider openrouter   # 多模型聚合
   --provider groq         # 超快推理
   --provider deepseek     # DeepSeek

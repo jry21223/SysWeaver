@@ -21,16 +21,7 @@ pub fn to_openai_tool_name(name: &str) -> String {
 }
 
 pub fn from_openai_tool_name(name: &str) -> String {
-    if name.contains('_') {
-        let parts: Vec<&str> = name.splitn(2, '_').collect();
-        if parts.len() == 2 {
-            format!("{}.{}", parts[0], parts[1])
-        } else {
-            name.to_string()
-        }
-    } else {
-        name.to_string()
-    }
+    name.replacen('_', ".", 1)
 }
 
 pub fn is_valid_openai_tool_name(name: &str) -> bool {
@@ -147,6 +138,31 @@ impl Default for ToolManager {
     }
 }
 
+/// Maps the raw `ssh.exec` result to a `ToolResult`.
+/// `lenient=true` treats non-empty stdout as success even when exit_code != 0,
+/// which is needed for commands that mix useful output with non-zero exit (e.g. grep, ps).
+fn ssh_exec_to_result(
+    tool: &str,
+    raw: anyhow::Result<(String, String, i32, u64)>,
+    lenient: bool,
+) -> Result<ToolResult> {
+    match raw {
+        Ok((stdout, stderr, exit_code, duration_ms)) => {
+            let success = exit_code == 0 || (lenient && !stdout.is_empty());
+            Ok(ToolResult {
+                success,
+                tool: tool.to_string(),
+                stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
+                stderr,
+                exit_code,
+                duration_ms,
+                dry_run_preview: None,
+            })
+        }
+        Err(e) => Ok(ToolResult::failure(tool, &e.to_string(), -1)),
+    }
+}
+
 /// SSH 模式下执行 shell.exec
 async fn dispatch_ssh_shell(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult> {
     let command = call.args["command"]
@@ -196,18 +212,7 @@ async fn dispatch_ssh_system(ssh: &SshConfig, call: &ToolCall) -> Result<ToolRes
         _         => "uname -a",
     };
 
-    match ssh.exec(cmd).await {
-        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
-            success: exit_code == 0 || !stdout.is_empty(),
-            tool: "system.info".to_string(),
-            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
-            stderr,
-            exit_code,
-            duration_ms,
-            dry_run_preview: None,
-        }),
-        Err(e) => Ok(ToolResult::failure("system.info", &e.to_string(), -1)),
-    }
+    ssh_exec_to_result("system.info", ssh.exec(cmd).await, true)
 }
 
 /// SSH 模式下执行 process.manage
@@ -247,18 +252,7 @@ async fn dispatch_ssh_process(ssh: &SshConfig, call: &ToolCall) -> Result<ToolRe
         _ => return Ok(ToolResult::failure("process.manage", &format!("不支持的操作: {}", action), -1)),
     };
 
-    match ssh.exec(&cmd).await {
-        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
-            success: exit_code == 0 || !stdout.is_empty(),
-            tool: "process.manage".to_string(),
-            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
-            stderr,
-            exit_code,
-            duration_ms,
-            dry_run_preview: None,
-        }),
-        Err(e) => Ok(ToolResult::failure("process.manage", &e.to_string(), -1)),
-    }
+    ssh_exec_to_result("process.manage", ssh.exec(&cmd).await, true)
 }
 
 /// SSH 模式下执行 service.manage
@@ -287,18 +281,7 @@ async fn dispatch_ssh_service(ssh: &SshConfig, call: &ToolCall) -> Result<ToolRe
         _ => return Ok(ToolResult::failure("service.manage", &format!("不支持的操作: {}", action), -1)),
     };
 
-    match ssh.exec(&cmd).await {
-        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
-            success: exit_code == 0 || !stdout.is_empty(),
-            tool: "service.manage".to_string(),
-            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
-            stderr,
-            exit_code,
-            duration_ms,
-            dry_run_preview: None,
-        }),
-        Err(e) => Ok(ToolResult::failure("service.manage", &e.to_string(), -1)),
-    }
+    ssh_exec_to_result("service.manage", ssh.exec(&cmd).await, true)
 }
 
 /// SSH 模式下执行 log.tail
@@ -314,18 +297,7 @@ async fn dispatch_ssh_log(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult
     let lines = call.args["lines"].as_i64().unwrap_or(50).min(500);
     let cmd   = format!("tail -n {} {} 2>&1", lines, path);
 
-    match ssh.exec(&cmd).await {
-        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
-            success: exit_code == 0,
-            tool: "log.tail".to_string(),
-            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
-            stderr,
-            exit_code,
-            duration_ms,
-            dry_run_preview: None,
-        }),
-        Err(e) => Ok(ToolResult::failure("log.tail", &e.to_string(), -1)),
-    }
+    ssh_exec_to_result("log.tail", ssh.exec(&cmd).await, false)
 }
 
 /// 受保护路径前缀（与 tools/file.rs 保持一致；远程模式不能依赖本地 canonicalize）
@@ -916,16 +888,5 @@ async fn dispatch_ssh_net(ssh: &SshConfig, call: &ToolCall) -> Result<ToolResult
         _        => "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null".to_string(),
     };
 
-    match ssh.exec(&cmd).await {
-        Ok((stdout, stderr, exit_code, duration_ms)) => Ok(ToolResult {
-            success: exit_code == 0 || !stdout.is_empty(),
-            tool: "net.check".to_string(),
-            stdout: if stdout.is_empty() { stderr.clone() } else { stdout },
-            stderr,
-            exit_code,
-            duration_ms,
-            dry_run_preview: None,
-        }),
-        Err(e) => Ok(ToolResult::failure("net.check", &e.to_string(), -1)),
-    }
+    ssh_exec_to_result("net.check", ssh.exec(&cmd).await, true)
 }

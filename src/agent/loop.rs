@@ -343,7 +343,9 @@ impl AgentLoop {
                     None => {
                         let err = last_err.unwrap();
                         let err_msg = format!("LLM 调用失败（已重试3次）: {}", err);
-                        eprintln!("❌ {}", err_msg);
+                        if self.tui_tx.is_none() {
+                            eprintln!("❌ {}", err_msg);
+                        }
                         self.emit(AgentEvent::Error(err_msg)).await;
                         return Err(err);
                     }
