@@ -151,7 +151,7 @@ sysweaver chat
 ```bash
 export SYSWEAVER_LLM_PROVIDER=anthropic
 export SYSWEAVER_LLM_BASE_URL=https://your-proxy.com
-export SYSWEAVER_LLM_MODEL=claude-opus-4-5
+export SYSWEAVER_LLM_MODEL=claude-opus-4-7
 ```
 
 ### 方式二：配置文件
@@ -168,7 +168,7 @@ sysweaver config --delete             # 删除配置文件
 ### 方式三：CLI 参数（最高优先级）
 
 ```bash
-sysweaver --provider openai --model gpt-4.1 chat
+sysweaver --provider openai --model gpt-5.5 chat
 sysweaver --provider anthropic --base-url https://my-proxy.com chat
 ```
 
@@ -182,17 +182,17 @@ CLI 参数 > 配置文件 > SYSWEAVER_LLM_* 环境变量 > Provider 专属环境
 
 ## 支持的 Provider
 
-| 名称 | `--provider` | 默认模型（次旗舰）|
+| 名称 | `--provider` | 默认模型（旗舰）|
 |------|-------------|-----------------|
-| Anthropic | `anthropic` | `claude-sonnet-4-6` |
-| OpenAI | `openai` | `gpt-4.1` |
-| DeepSeek | `deepseek` | `deepseek-v3` |
-| Groq | `groq` | `llama-4-maverick-17b-128e-instruct` |
-| Moonshot Kimi | `kimi` | `kimi-k2` |
-| 智谱 GLM | `glm` | `glm-4-plus` |
-| 阿里云百炼 | `bailian` | `qwen3-235b-a22b` |
-| MiniMax | `minimax` | `MiniMax-M1` |
-| OpenRouter | `openrouter` | `openai/gpt-4.1` |
+| Anthropic | `anthropic` | `claude-opus-4-7` |
+| OpenAI | `openai` | `gpt-5.5` |
+| DeepSeek | `deepseek` | `deepseek-v4-pro` |
+| Groq | `groq` | `llama-4-scout-17b-16e-instruct` |
+| Moonshot Kimi | `kimi` | `kimi-k2.6` |
+| 智谱 GLM | `glm` | `glm-5.1` |
+| 阿里云百炼 | `bailian` | `qwen3.6-plus` |
+| MiniMax | `minimax` | `minimax-m2.7` |
+| OpenRouter | `openrouter` | `openai/gpt-5.5` |
 | 自定义端点 | `custom` | 手动填写 |
 
 ---
@@ -380,7 +380,7 @@ sysweaver --ssh admin@server.example.com:2222 --ssh-key ~/.ssh/id_ed25519 chat
 
 ## 图片分析
 
-在 iTerm2 等支持图片预览的终端中，可以直接将图片拖入或粘贴到输入框，SysWeaver 会自动识别并以 Base64 格式发送给支持视觉能力的 LLM（如 claude-sonnet-4-6、gpt-4.1）。
+在 iTerm2 等支持图片预览的终端中，可以直接将图片拖入或粘贴到输入框，SysWeaver 会自动识别并以 Base64 格式发送给支持视觉能力的 LLM（如 claude-opus-4-7、gpt-5.5）。
 
 支持格式：PNG、JPG、JPEG、GIF、WebP、BMP（最大 20 MB）
 
