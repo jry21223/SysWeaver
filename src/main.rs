@@ -50,6 +50,8 @@ use user_config::{delete_config, interactive_config, show_current_config, try_au
   --provider openrouter   # 多模型聚合
   --provider groq         # 超快推理
   --provider deepseek     # DeepSeek
+  --provider ollama       # 本地模型（无需 API Key）
+  --provider lmstudio     # LM Studio 本地模型
 
 环境变量（无需 config 文件，直接设置即可使用）：
   ANTHROPIC_API_KEY          # Anthropic 官方（自动检测）

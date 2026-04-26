@@ -186,6 +186,26 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             "阿里云百炼（Qwen Coding）",
         ),
         preset(
+            "ollama",
+            "Ollama",
+            LlmProviderKind::OpenAiCompatible,
+            "http://localhost:11434",
+            "llama4:scout",
+            &[],
+            &["local", "localhost", "本地"],
+            "Ollama 本地模型（无需 API Key）",
+        ),
+        preset(
+            "lmstudio",
+            "LM Studio",
+            LlmProviderKind::OpenAiCompatible,
+            "http://localhost:1234",
+            "local-model",
+            &[],
+            &["lm-studio"],
+            "LM Studio 本地模型（无需 API Key）",
+        ),
+        preset(
             "custom",
             "Custom",
             LlmProviderKind::OpenAiCompatible,
@@ -260,8 +280,12 @@ pub fn validate_base_url(url_str: &str) -> Result<String> {
     if url_str.is_empty() {
         return Err(anyhow!("Base URL 不能为空"));
     }
-    if !url_str.starts_with("https://") {
-        return Err(anyhow!("Base URL 必须使用 HTTPS 协议"));
+    // 允许 localhost/127.0.0.1 使用 HTTP（本地模型）
+    let is_local = url_str.starts_with("http://localhost")
+        || url_str.starts_with("http://127.0.0.1")
+        || url_str.starts_with("http://[::1]");
+    if !url_str.starts_with("https://") && !is_local {
+        return Err(anyhow!("Base URL 必须使用 HTTPS 协议（本地 localhost 可用 HTTP）"));
     }
     if url_str.contains('@') && url_str.contains(':') {
         return Err(anyhow!("Base URL 不能包含嵌入的凭证"));

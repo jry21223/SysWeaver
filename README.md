@@ -193,6 +193,8 @@ CLI 参数 > 配置文件 > SYSWEAVER_LLM_* 环境变量 > Provider 专属环境
 | 阿里云百炼 | `bailian` | `qwen3.6-plus` |
 | MiniMax | `minimax` | `minimax-m2.7` |
 | OpenRouter | `openrouter` | `openai/gpt-5.5` |
+| **Ollama（本地）** | `ollama` | `llama4:scout` |
+| **LM Studio（本地）** | `lmstudio` | `local-model` |
 | 自定义端点 | `custom` | 手动填写 |
 
 ---
